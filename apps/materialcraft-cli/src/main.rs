@@ -274,14 +274,16 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
             let h = Arc::new(Mutex::new(Headless::new(Headless::default_session(), workspace(a)?)));
             match a.num::<u16>("--port")? {
                 Some(port) => {
-                    let (token, file) = server_token(port).map_err(|e| e.to_string())?;
-                    rpc::serve_tcp(port, h, token, |addr| {
-                        eprintln!("materialcraft-cli: serving JSON lines on {addr}");
-                        if let Some(f) = &file {
-                            eprintln!("materialcraft-cli: token in {}", f.display());
-                        }
-                    })
-                    .map_err(|e| e.to_string())?;
+                    // Bind first: a port in use must not replace its server's token file, and port 0's
+                    // token file is named after the port actually picked.
+                    let listener = rpc::bind_tcp(port).map_err(|e| e.to_string())?;
+                    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+                    let (token, file) = server_token(addr.port()).map_err(|e| e.to_string())?;
+                    eprintln!("materialcraft-cli: serving JSON lines on {addr}");
+                    if let Some(f) = &file {
+                        eprintln!("materialcraft-cli: token in {}", f.display());
+                    }
+                    rpc::serve_listener(listener, h, token).map_err(|e| e.to_string())?;
                 }
                 None => rpc::serve_lines(&h, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| e.to_string())?,
             }
