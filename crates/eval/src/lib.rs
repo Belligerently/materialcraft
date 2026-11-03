@@ -327,6 +327,24 @@ fn graph_tree_hash(pkg: &Package, gi: usize, stack: &mut Vec<usize>) -> u64 {
     h.finish()
 }
 
+/// The graph inputs a node's cook can read: those named by `get_*` ops of its function-valued
+/// parameters. Bindings and node functions are already folded into `params` before the key is
+/// computed, so these are the only remaining readers of `vars` (`Ctx::vars` in the function nodes).
+/// Matching every `get_*` op, not only `get_var`, over-approximates on purpose.
+fn vars_read<'v>(params: &BTreeMap<String, Value>, vars: &'v BTreeMap<String, Value>) -> Vec<(&'v str, &'v Value)> {
+    let mut read: Vec<(&str, &Value)> = params
+        .values()
+        .filter_map(|v| if let Value::Function(g) = v { Some(g) } else { None })
+        .flat_map(|g| g.nodes.iter())
+        .filter(|n| n.op.starts_with("get_"))
+        .filter_map(|n| if let Some(Value::Text(name)) = &n.value { vars.get_key_value(name.as_str()) } else { None })
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
+    read.sort_by_key(|(k, _)| *k);
+    read.dedup_by_key(|(k, _)| *k);
+    read
+}
+
 fn cook_node(
     pkg: &Package,
     gi: usize,
@@ -403,7 +421,7 @@ fn cook_node(
         res_hash,
         sub_hash,
         input_img.map(image_key),
-        serde_json::to_string(vars).unwrap_or_default(),
+        serde_json::to_string(&vars_read(&params, vars)).unwrap_or_default(),
     ));
     if let Some(v) = cache.get(key) {
         return NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true };
@@ -691,5 +709,25 @@ mod tests {
         opts.inputs.insert("curvature".into(), Image::filled(4, 4, Kind::Gray, [0.1; 4]));
         let c = cook(&p, 0, &opts, &mut cache);
         assert!((c.image(o, 0).unwrap().data[0] - 0.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn input_change_recooks_only_readers() {
+        use materialcraft_core::function::{FnGraph, FnNode};
+        let (mut p, noise, blur, out) = sample();
+        let reader = p.graphs[0].add_node("pixel_processor", [0.0, 100.0]);
+        let get_a = FnNode { id: 1, op: "get_var".into(), inputs: vec![], value: Some(Value::Text("a".into())), pos: [0.0; 2] };
+        p.graphs[0].node_mut(reader).unwrap().params.insert("function".into(), Value::Function(Box::new(FnGraph { nodes: vec![get_a], output: Some(1) })));
+        let cache = &mut Cache::default();
+        let mut opts = Options::new(&no_res);
+        opts.overrides.insert("a".into(), Value::Float(0.25));
+        let first = cook(&p, 0, &opts, cache);
+        assert!(first.nodes.values().all(|r| r.error.is_none() && !r.cached));
+        opts.overrides.insert("a".into(), Value::Float(0.75));
+        let second = cook(&p, 0, &opts, cache);
+        for id in [noise, blur, out] {
+            assert!(second.nodes[&id].cached, "node {} does not read `a`", id.0);
+        }
+        assert!(!second.nodes[&reader].cached, "the reader must re-cook");
     }
 }
