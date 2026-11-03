@@ -144,13 +144,21 @@ fn graph_param(s: &Session, p: &J) -> Result<usize> {
     Ok(gi)
 }
 
+/// The graph and cook options a material export request asks for: `graph?`, `size?` (px) and
+/// `values?` (exposed input values). Shared by `file.exportMaterial` and the workspace-scoped
+/// automation export, which supply their own destination.
+pub fn material_request(s: &Session, cmd: &str, p: &J) -> Result<(usize, MaterialOptions)> {
+    let gi = graph_param(s, p)?;
+    let o = MaterialOptions { size: u64p(p, "size").map(|v| v.min(8192) as u32), values: values_param(cmd, s.pkg.graph(gi)?, p)?, ..Default::default() };
+    Ok((gi, o))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn export_material(s: &mut Session, p: &J) -> Result<J> {
     const CMD: &str = "file.exportMaterial";
     let path = strp(p, "path").ok_or_else(|| bad(CMD, "`path` is required"))?;
     let path = if path.to_ascii_lowercase().ends_with(&format!(".{MATERIAL_EXT}")) { path.to_string() } else { format!("{path}.{MATERIAL_EXT}") };
-    let gi = graph_param(s, p)?;
-    let mut o = MaterialOptions { size: u64p(p, "size").map(|v| v.min(8192) as u32), values: values_param(CMD, s.pkg.graph(gi)?, p)?, ..Default::default() };
+    let (gi, mut o) = material_request(s, CMD, p)?;
     for (id, file) in p.get("inputs").and_then(J::as_object).into_iter().flatten() {
         let file = file.as_str().ok_or_else(|| bad(CMD, format!("inputs.{id} must be an image path")))?;
         let bytes = std::fs::read(file).map_err(|e| bad(CMD, format!("{file}: {e}")))?;

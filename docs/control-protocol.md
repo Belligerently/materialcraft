@@ -1,6 +1,6 @@
 # Control protocol and MCP
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (portable materials for TextureCraft) · **Target:** the professional node-based material workflow
+> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-03 · **Change:** minor (`material_export` MCP tool) · **Target:** the professional node-based material workflow
 
 Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 
@@ -26,6 +26,7 @@ Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 | `package.open {path}` / `package.save {path?}` | headless | workspace-scoped package I/O |
 | `bitmap.import {path, name?}` | headless | embed an image as a resource |
 | `outputs.export {dir, format?, pattern?, depth?, graph?}` | headless | cook at full size and write every output |
+| `material.export {path, graph?, size?, values?}` | headless | cook and write a portable `.mcmat` (`.mcmat` appended when missing) below the write root: the workspace-scoped `file.exportMaterial` |
 | `render {view?, width?, height?, yaw?, pitch?, scene?, node?, port?, full?, tiling?, hq?, displacement?}` | headless | PNG (base64) of the 3D view or of one node; `hq` is the beauty render (displaced mesh, ray-traced AO, shadowed key light, 3×3 supersampling), `displacement` its depth in scene radii |
 | `ui.inspect` | app | UI state, the graph view rectangle, every node's screen rectangle, every port's screen position, fps, toasts |
 | `ui.menu.list` / `ui.menu.invoke {id}` | app | the menu catalog; behave like a click |
@@ -122,6 +123,9 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 
 `session_inspect`, `command_list`, `command_run`, `command_batch`, `library_list`, `graph_new`,
 `node_add`, `node_connect`, `node_param`, `package_open`, `package_save`, `bitmap_import`,
-`outputs_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
+`outputs_export`, `material_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
 `ui_screenshot`, `ui_inspect`, `ui_menu_invoke`, `ui_input`. `package_open` opens `.mcmat` files
-too; exporting one is CLI-only for now (the workspace sandbox refuses `file.*` commands).
+too, and `material_export` `{path, graph?, size?, values?}` writes one below `--write-root` (`path` is
+relative, the parent folder must exist, `values` are exposed input values). The workspace sandbox
+still refuses `file.*` commands, so a sandboxed agent exports through the tool, not `file.exportMaterial`;
+mesh-map `inputs` stay a CLI feature.
