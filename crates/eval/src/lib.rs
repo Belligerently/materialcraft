@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
 use materialcraft_image::{Image, Kind};
-use materialcraft_nodes::{Ctx, NodeDef, PortKind, find, resolve_params};
+use materialcraft_nodes::{Ctx, NodeDef, PortKind, clamp_params, find, resolve_params};
 
 /// Sub-graphs may nest this deep (a graph instancing itself would recurse forever).
 pub const MAX_DEPTH: u32 = 8;
@@ -346,6 +346,12 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
             Err(e) => return fail(format!("function of `{param}`: {e}"), 0),
         }
     }
+    // Hard limits on whatever files, bindings and functions supplied (a value can't hang a cook).
+    if let Some(d) = def
+        && node.def != "graph_instance"
+    {
+        clamp_params(d, &mut params);
+    }
     let tile = node.base.tiling[0] && node.base.tiling[1];
     // Input nodes read the caller's image for their identifier.
     let input_img = node.def.starts_with("input_").then(|| opts.inputs.get(&identifier(node))).flatten();
@@ -493,6 +499,18 @@ mod tests {
         let c = cook(&p, 0, &opts, &mut cache);
         assert!(c.nodes[&noise].cached && !c.nodes[&blur].cached && !c.nodes[&out].cached);
         assert_eq!(outputs(&p.graphs[0], &c).len(), 1);
+    }
+
+    #[test]
+    fn hostile_param_is_clamped_before_cooking() {
+        let (mut p, noise, _, _) = sample();
+        let blur = p.graphs[0].add_node("anisotropic_blur", [150.0, 100.0]);
+        p.graphs[0].connect(noise, "output", blur, "input").unwrap();
+        p.graphs[0].node_mut(blur).unwrap().params.insert("intensity".into(), Value::Float(1e30));
+        let mut cache = Cache::default();
+        let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
+        assert!(c.nodes[&blur].error.is_none(), "{:?}", c.nodes[&blur].error);
+        assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((64, 64)));
     }
 
     #[test]
