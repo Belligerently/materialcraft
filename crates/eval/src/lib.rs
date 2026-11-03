@@ -11,8 +11,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
 use materialcraft_image::{Image, Kind};

@@ -150,7 +150,7 @@ fn exposed_input_change_recooks_only_readers() {
     s.cook();
     run(&mut s, "graph.exposed.set", json!({"id": "level", "value": 0.75}));
     s.cook();
-    let recooked: Vec<u64> = s.cooked.nodes.iter().filter(|(_, r)| !r.cached).map(|(id, _)| u64::from(id.0)).collect();
+    let recooked: Vec<u64> = s.cooked.nodes.iter().filter(|(_, r)| !r.cached).map(|(id, _)| id.0).collect();
     assert_eq!(recooked, [u], "only the node reading `level` re-cooks");
 }
 
