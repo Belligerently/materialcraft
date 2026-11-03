@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use materialcraft_core::{Graph, NodeId, Package};
+use materialcraft_core::{Graph, NodeId, Package, ResourceBytes};
 use materialcraft_eval::{Cache, Cooked, Options};
 use materialcraft_image::Image;
 use serde::{Deserialize, Serialize};
@@ -146,7 +146,7 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    decoded: Arc<Mutex<HashMap<String, Image>>>,
+    decoded: Arc<Mutex<HashMap<u64, Image>>>,
 }
 
 impl Session {
@@ -285,18 +285,25 @@ impl Session {
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
-        let res: Vec<(String, Arc<Vec<u8>>)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
+        let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
+        // Free images of resources that were deleted or replaced.
+        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|k, _| res.iter().any(|(_, b)| b.content_hash() == *k));
         move |name: &str| {
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = format!("{name}:{}", bytes.len());
+            let key = bytes.content_hash();
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes).ok()?;
+            let img = materialcraft_formats::decode(bytes.as_slice()).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
+    }
+
+    /// Forget every decoded resource image (the package was replaced).
+    pub(crate) fn clear_decoded(&self) {
+        self.decoded.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     /// Cook the open graph now (at the preview size), on this thread.

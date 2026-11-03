@@ -187,3 +187,19 @@ fn camera_prefs_bound_the_pan_and_survive_hostile_values() {
     assert_eq!(s.camera, CameraPrefs::default());
     assert_eq!(CameraPrefs { pan_limit: f32::INFINITY, pan_speed: 2.0 }.sanitized().pan_speed, 2.0);
 }
+
+#[test]
+fn reimported_bitmap_shows_new_pixels() {
+    use materialcraft_formats::{Depth, encode};
+    use materialcraft_image::{Image, Kind};
+    let bmp = |v: f32| encode(&Image::filled(4, 4, Kind::Color, [v, v, v, 1.0]), "bmp", Depth::U8, true).unwrap();
+    let (dark, light) = (bmp(0.1), bmp(0.9));
+    assert_eq!(dark.len(), light.len(), "same-size files are the case under test");
+    let mut s = sample_session();
+    materialcraft_engine::file_cmds::add_resource(&mut s, "tex.bmp", dark, Some("tex")).unwrap();
+    let before = s.resource_decoder()("tex").unwrap().data[0];
+    s.undo();
+    materialcraft_engine::file_cmds::add_resource(&mut s, "tex.bmp", light, Some("tex")).unwrap();
+    let after = s.resource_decoder()("tex").unwrap().data[0];
+    assert!(after - before > 0.5, "{before} -> {after}");
+}
