@@ -105,7 +105,8 @@ fn modal(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, size: egui
         .collapsible(false)
         .resizable(false)
         .default_size(size)
-        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .show(ctx, body);
 }
 
