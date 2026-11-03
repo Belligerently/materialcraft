@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
@@ -253,8 +253,14 @@ pub fn function_value(like: &Value, v: [f32; 4]) -> Option<Value> {
     })
 }
 
-/// Cook graph `gi` of `pkg`.
-pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cooked {
+/// Lock the cache, recovering from a poisoned lock (a cache entry is never half-written).
+fn lock(cache: &Mutex<Cache>) -> std::sync::MutexGuard<'_, Cache> {
+    cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Cook graph `gi` of `pkg`. The cache is locked only around lookups and inserts, never while a
+/// node cooks, so other users of the cache are not blocked for the length of a cook.
+pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &Mutex<Cache>) -> Cooked {
     let t0 = now_ms();
     let mut out = Cooked::default();
     let Some(graph) = pkg.graphs.get(gi) else { return out };
@@ -353,7 +359,7 @@ fn cook_node(
     done: &Cooked,
     vars: &BTreeMap<String, Value>,
     opts: &Options,
-    cache: &mut Cache,
+    cache: &Mutex<Cache>,
 ) -> NodeResult {
     let (in_ports, out_ports) = ports(pkg, node);
     let def = find(&node.def);
@@ -423,7 +429,7 @@ fn cook_node(
         input_img.map(image_key),
         serde_json::to_string(&vars_read(&params, vars)).unwrap_or_default(),
     ));
-    if let Some(v) = cache.get(key) {
+    if let Some(v) = lock(cache).get(key) {
         return NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true };
     }
     let t0 = now_ms();
@@ -443,7 +449,7 @@ fn cook_node(
     match result {
         Ok(imgs) if imgs.len() == out_ports.len().max(1) || out_ports.is_empty() => {
             let v = Arc::new(imgs);
-            cache.put(key, v.clone());
+            lock(cache).put(key, v.clone());
             NodeResult { outputs: v, error: None, ms: (now_ms() - t0) as f32, key, cached: false }
         }
         Ok(imgs) => fail(format!("`{}` made {} images for {} outputs", node.def, imgs.len(), out_ports.len()), key),
@@ -477,7 +483,7 @@ fn cook_instance(
     params: &BTreeMap<String, Value>,
     size: (u32, u32),
     opts: &Options,
-    cache: &mut Cache,
+    cache: &Mutex<Cache>,
 ) -> Result<Vec<Image>, String> {
     if opts.depth >= MAX_DEPTH {
         return Err("graph instances nest too deep (does a graph use itself?)".into());
@@ -560,17 +566,17 @@ mod tests {
     #[test]
     fn cooks_and_caches() {
         let (mut p, noise, blur, out) = sample();
-        let mut cache = Cache::default();
+        let cache = Mutex::new(Cache::default());
         let opts = Options::new(&no_res);
-        let a = cook(&p, 0, &opts, &mut cache);
+        let a = cook(&p, 0, &opts, &cache);
         assert!(a.nodes.values().all(|r| r.error.is_none() && !r.cached));
         assert_eq!(a.image(out, 0).map(|i| (i.w, i.h)), Some((64, 64)));
         // Same graph: everything from the cache.
-        let b = cook(&p, 0, &opts, &mut cache);
+        let b = cook(&p, 0, &opts, &cache);
         assert!(b.nodes.values().all(|r| r.cached));
         // Editing the blur re-cooks the blur and the output, not the noise.
         p.graphs[0].node_mut(blur).unwrap().params.insert("intensity".into(), Value::Float(5.0));
-        let c = cook(&p, 0, &opts, &mut cache);
+        let c = cook(&p, 0, &opts, &cache);
         assert!(c.nodes[&noise].cached && !c.nodes[&blur].cached && !c.nodes[&out].cached);
         assert_eq!(outputs(&p.graphs[0], &c).len(), 1);
     }
@@ -580,10 +586,10 @@ mod tests {
         let (mut p, _, _, out) = sample();
         p.graphs[0].size = [10, 10];
         let bad = p.graphs[0].add_node("no_such_node", [0.0, 0.0]);
-        let mut cache = Cache::default();
+        let cache = Mutex::new(Cache::default());
         let mut opts = Options::new(&no_res);
         opts.max_size = Some(128);
-        let c = cook(&p, 0, &opts, &mut cache);
+        let c = cook(&p, 0, &opts, &cache);
         assert_eq!(c.image(out, 0).map(|i| i.w), Some(128));
         assert!(c.nodes[&bad].error.is_some());
     }
@@ -610,8 +616,8 @@ mod tests {
         // A graph instancing itself is refused, not a stack overflow.
         let selfi = g.add_node("graph_instance", [0.0, 200.0]);
         g.node_mut(selfi).unwrap().params.insert("graph".into(), Value::Text("g".into()));
-        let mut cache = Cache::default();
-        let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
+        let cache = Mutex::new(Cache::default());
+        let c = cook(&p, 0, &Options::new(&no_res), &cache);
         let img = c.image(inst, 0).unwrap();
         assert!((img.data[0] - (1.0 - 0.0722 * 0.25 - 0.2126 * 0.25 - 0.7152 * 0.25)).abs() < 1e-4, "{}", img.data[0]);
         assert!(c.nodes[&selfi].error.as_deref().is_some_and(|e| e.contains("uses itself")), "{:?}", c.nodes[&selfi].error);
@@ -641,13 +647,13 @@ mod tests {
         let (a, top) = instancing("a", "b");
         let mut p = Package::new("p");
         p.graphs = vec![a, b, c];
-        let mut cache = Cache::default();
+        let cache = Mutex::new(Cache::default());
         let opts = Options::new(&no_res);
-        let first = cook(&p, 0, &opts, &mut cache);
+        let first = cook(&p, 0, &opts, &cache);
         let out_a = p.graphs[0].nodes.iter().find(|n| n.def == "output").unwrap().id;
         assert!((first.image(out_a, 0).unwrap().mean()[0] - 0.2).abs() < 0.01);
         p.graphs[2].node_mut(u).unwrap().params.insert("color".into(), Value::Color([0.8, 0.8, 0.8, 1.0]));
-        let second = cook(&p, 0, &opts, &mut cache);
+        let second = cook(&p, 0, &opts, &cache);
         assert!(!second.nodes[&top].cached);
         assert!((second.image(out_a, 0).unwrap().mean()[0] - 0.8).abs() < 0.01);
     }
@@ -658,8 +664,8 @@ mod tests {
         let (y, _) = instancing("y", "x");
         let mut p = Package::new("p");
         p.graphs = vec![x, y];
-        let mut cache = Cache::default();
-        let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
+        let cache = Mutex::new(Cache::default());
+        let c = cook(&p, 0, &Options::new(&no_res), &cache);
         assert!(c.nodes[&xi].error.as_deref().is_some_and(|e| e.contains("uses itself")), "{:?}", c.nodes[&xi].error);
     }
 
@@ -677,13 +683,13 @@ mod tests {
         // Stands in for decoding: the first byte picks the shade.
         let shade = AtomicU8::new(1);
         let res = |_: &str| Some(Image::filled(4, 4, Kind::Gray, [f32::from(shade.load(Ordering::Relaxed)) / 10.0; 4]));
-        let mut cache = Cache::default();
+        let cache = Mutex::new(Cache::default());
         let opts = Options::new(&res);
-        let first = cook(&p, 0, &opts, &mut cache);
+        let first = cook(&p, 0, &opts, &cache);
         let mean = first.image(bm, 0).unwrap().mean()[0];
         p.resources[0].bytes = ResourceBytes::new(vec![2; 100]);
         shade.store(2, Ordering::Relaxed);
-        let second = cook(&p, 0, &opts, &mut cache);
+        let second = cook(&p, 0, &opts, &cache);
         assert!(!second.nodes[&bm].cached);
         assert!((second.image(bm, 0).unwrap().mean()[0] - mean).abs() > 0.05);
     }
@@ -700,14 +706,14 @@ mod tests {
         g.input_images.insert("curvature".into(), "curv".into());
         p.graphs.push(g);
         let res = |n: &str| (n == "curv").then(|| Image::filled(4, 4, Kind::Color, [0.8, 0.8, 0.8, 1.0]));
-        let mut cache = Cache::default();
-        let c = cook(&p, 0, &Options::new(&res), &mut cache);
+        let cache = Mutex::new(Cache::default());
+        let c = cook(&p, 0, &Options::new(&res), &cache);
         let img = c.image(o, 0).unwrap();
         assert!(img.is_gray() && (img.data[0] - 0.8).abs() < 1e-4, "bound image, as gray");
         // The caller's image wins over the bound one.
         let mut opts = Options::new(&res);
         opts.inputs.insert("curvature".into(), Image::filled(4, 4, Kind::Gray, [0.1; 4]));
-        let c = cook(&p, 0, &opts, &mut cache);
+        let c = cook(&p, 0, &opts, &cache);
         assert!((c.image(o, 0).unwrap().data[0] - 0.1).abs() < 1e-4);
     }
 
@@ -718,7 +724,7 @@ mod tests {
         let reader = p.graphs[0].add_node("pixel_processor", [0.0, 100.0]);
         let get_a = FnNode { id: 1, op: "get_var".into(), inputs: vec![], value: Some(Value::Text("a".into())), pos: [0.0; 2] };
         p.graphs[0].node_mut(reader).unwrap().params.insert("function".into(), Value::Function(Box::new(FnGraph { nodes: vec![get_a], output: Some(1) })));
-        let cache = &mut Cache::default();
+        let cache = &Mutex::new(Cache::default());
         let mut opts = Options::new(&no_res);
         opts.overrides.insert("a".into(), Value::Float(0.25));
         let first = cook(&p, 0, &opts, cache);
