@@ -5,7 +5,8 @@
 Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 
 1. **MCP** (`materialcraft-cli mcp`): headless (an in-process session, files only below
-   `--read-root` / `--write-root`) or bridged to the running app (`--bridge <port>`).
+   `--read-root` / `--write-root`, also spelled `--automation-read-root` /
+   `--automation-write-root` as in the other crafting apps; `serve` takes them too) or bridged to the running app (`--bridge <port>`).
 2. **JSON lines** (`materialcraft-cli serve`): the same methods on stdio, or on `127.0.0.1:<port>`
    behind a token.
 3. **The app's control channel** (`materialcraft --control <port>`): one JSON request per line,
