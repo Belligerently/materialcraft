@@ -520,7 +520,23 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
             let footer = Rect::from_min_max(pos2(sr.left(), body.bottom()), sr.max);
             if let Some(img) = result.and_then(|r| r.outputs.first()) {
                 let bits = if n.base.format == materialcraft_engine::core::OutputFormat::Inherit { g.format.bits() } else { n.base.format.bits() };
-                let txt = format!("{}x{} - {}{}", img.w, img.h, if img.is_gray() { "L" } else { "C" }, bits);
+                let format = format!("{}{}", if img.is_gray() { "L" } else { "C" }, bits);
+                let txt = if let Some(limit) = app.session.preview_size {
+                    if error.is_none() {
+                        let [pw, ph] = g.size_px();
+                        resp.clone().on_hover_text(format!(
+                            "{} x {} ({format}bpc)\n{}: {pw} x {ph}\n{}: {limit} px\n{}",
+                            img.w,
+                            img.h,
+                            tr("Parent size"),
+                            tr("Preview limit"),
+                            tr("Change Preview size while editing in Edit > Preferences. Exports use each node's configured output size.")
+                        ));
+                    }
+                    format!("{}x{} {}", img.w, img.h, tr("Preview"))
+                } else {
+                    format!("{}x{} - {format}", img.w, img.h)
+                };
                 painter.text(footer.center(), Align2::CENTER_CENTER, txt, small.clone(), tk.text_dim);
             }
             if n.def == "output" {
