@@ -205,6 +205,30 @@ fn image_key(i: &Image) -> u64 {
     hash_of(&(i.w, i.h, i.data.iter().step_by(step).map(|v| v.to_bits()).collect::<Vec<u32>>()))
 }
 
+/// A hash of an instanced graph and of every graph it instances in turn (and the resources they
+/// use), so an edit anywhere below an instance node invalidates the instance's cached result.
+fn closure_hash(pkg: &Package, index: usize, graph: &Graph) -> u64 {
+    fn walk(pkg: &Package, g: &Graph, depth: u32, seen: &mut Vec<usize>, h: &mut DefaultHasher) {
+        serde_json::to_string(g).unwrap_or_default().hash(h);
+        for n in &g.nodes {
+            if let Some(Value::Text(name)) = n.params.get("resource") {
+                pkg.resource(name).map(|r| &r.bytes).hash(h);
+            }
+            if n.def == "graph_instance" && depth < MAX_DEPTH {
+                if let Some((i, sub)) = instance_graph(pkg, n) {
+                    if !seen.contains(&i) {
+                        seen.push(i);
+                        walk(pkg, sub, depth + 1, seen, h);
+                    }
+                }
+            }
+        }
+    }
+    let mut h = DefaultHasher::new();
+    walk(pkg, graph, 0, &mut vec![index], &mut h);
+    h.finish()
+}
+
 fn hash_of(v: &impl Hash) -> u64 {
     let mut h = DefaultHasher::new();
     v.hash(&mut h);
@@ -356,11 +380,10 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
     // Input nodes read the caller's image for their identifier.
     let input_img = node.def.starts_with("input_").then(|| opts.inputs.get(&identifier(node))).flatten();
     let res_hash = match params.get("resource") {
-        Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| hash_of(&(r.bytes.len(), r.bytes.get(..64.min(r.bytes.len())).map(|b| b.to_vec())))),
+        Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| hash_of(&r.bytes)),
         _ => 0,
     };
-    let sub_hash =
-        if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(_, g)| hash_of(&serde_json::to_string(g).unwrap_or_default())) } else { 0 };
+    let sub_hash = if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(i, g)| closure_hash(pkg, i, g)) } else { 0 };
     let key = hash_of(&(
         &node.def,
         serde_json::to_string(&params).unwrap_or_default(),
@@ -544,6 +567,45 @@ mod tests {
         let img = c.image(inst, 0).unwrap();
         assert!((img.data[0] - (1.0 - 0.0722 * 0.25 - 0.2126 * 0.25 - 0.7152 * 0.25)).abs() < 1e-4, "{}", img.data[0]);
         assert!(c.nodes[&selfi].error.is_some() || c.nodes[&selfi].outputs.len() == 1);
+    }
+
+    fn uniform_graph(name: &str, v: f32) -> Graph {
+        let mut g = Graph::new(name);
+        g.size = [4, 4];
+        let u = g.add_node("uniform", [0.0, 0.0]);
+        g.node_mut(u).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(u).unwrap().params.insert("color".into(), Value::Color([v, v, v, 1.0]));
+        let o = g.add_node("output", [100.0, 0.0]);
+        g.connect(u, "output", o, "input").unwrap();
+        g
+    }
+
+    fn instance_chain(from: &str, to: &str) -> Graph {
+        let mut g = Graph::new(from);
+        g.size = [4, 4];
+        let i = g.add_node("graph_instance", [0.0, 0.0]);
+        g.node_mut(i).unwrap().params.insert("graph".into(), Value::Text(to.into()));
+        let o = g.add_node("output", [100.0, 0.0]);
+        g.connect(i, "output", o, "input").unwrap();
+        g
+    }
+
+    /// Editing a graph that is instanced two levels down must change the top graph's result.
+    #[test]
+    fn nested_instances_see_edits_to_the_innermost_graph() {
+        let mut p = Package::new("p");
+        p.graphs.push(instance_chain("top", "mid"));
+        p.graphs.push(instance_chain("mid", "leaf"));
+        p.graphs.push(uniform_graph("leaf", 0.2));
+        let top_out = p.graphs[0].nodes.iter().find(|n| n.def == "output").unwrap().id;
+        let mut cache = Cache::default();
+        let before = cook(&p, 0, &Options::new(&no_res), &mut cache).image(top_out, 0).unwrap().data[0];
+        assert!((before - 0.2).abs() < 1e-3, "{before}");
+        let leaf = &mut p.graphs[2];
+        let u = leaf.nodes.iter().find(|n| n.def == "uniform").unwrap().id;
+        leaf.node_mut(u).unwrap().params.insert("color".into(), Value::Color([0.7, 0.7, 0.7, 1.0]));
+        let after = cook(&p, 0, &Options::new(&no_res), &mut cache).image(top_out, 0).unwrap().data[0];
+        assert!((after - 0.7).abs() < 1e-3, "stale cached result: {after}");
     }
 
     #[test]
