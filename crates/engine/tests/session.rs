@@ -83,7 +83,33 @@ fn package_save_and_open_round_trip() {
     let out = dir.join("tex");
     let r = run(&mut s, "file.export", json!({"dir": out.to_str().unwrap(), "format": "png", "depth": 8}));
     assert_eq!(r["files"].as_array().unwrap().len(), 6);
+    let small = dir.join("small");
+    run(&mut s, "file.export", json!({"dir": small.to_str().unwrap(), "format": "png", "depth": 8, "size": 64}));
+    let file = std::fs::read_dir(&small).unwrap().next().unwrap().unwrap().path();
+    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!((img.w, img.h), (64, 64));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `file.export` `size` is the larger side in pixels; 0 means the graph's size and the proportions are kept.
+#[test]
+fn export_size_keeps_proportions_and_clamps() {
+    let mut s = sample_session();
+    s.pkg.graphs[0].size = [7, 6];
+    let dims = |s: &Session, size: Value| {
+        let (gi, ext, pattern, depth, size) = materialcraft_engine::file_cmds::export_params(s, &json!({"size": size})).unwrap();
+        let files = materialcraft_engine::file_cmds::export_outputs(s, gi, &ext, &pattern, depth, size).unwrap();
+        files.iter().map(|f| materialcraft_formats::decode(&f.bytes).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
+    };
+    for size in [json!(0), json!(null)] {
+        assert!(dims(&s, size).iter().all(|d| *d == (128, 64)));
+    }
+    assert!(dims(&s, json!(32)).iter().all(|d| *d == (32, 16)));
+    let parsed = |size: Value| materialcraft_engine::file_cmds::export_params(&s, &json!({"size": size})).unwrap().4;
+    assert_eq!(parsed(json!(0)), None);
+    assert_eq!(parsed(json!(u64::MAX)), Some(u32::MAX));
+    s.pkg.graphs[0].size = [u32::MAX, u32::MAX];
+    assert!(dims(&s, json!(32)).iter().all(|d| *d == (32, 32)));
 }
 
 /// A scratch folder for one test, removed when dropped.
@@ -268,6 +294,22 @@ fn dynamic_parameters_follow_graph_inputs() {
 }
 
 #[test]
+fn exposed_input_change_recooks_only_readers() {
+    let mut s = sample_session();
+    run(&mut s, "file.new", json!({"template": "rusty_metal", "size": 64}));
+    s.preview_size = None;
+    let u = run(&mut s, "graph.node.add", json!({"def": "uniform", "params": {"mode": 1}}))["id"].as_u64().unwrap();
+    run(&mut s, "graph.exposed.add", json!({"id": "level", "default": {"t": "float", "v": 0.25}}));
+    let f = json!({"nodes": [{"id": 1, "op": "get_var", "value": {"t": "text", "v": "level"}}], "output": 1});
+    run(&mut s, "graph.node.function", json!({"id": u, "param": "color", "function": f}));
+    s.cook();
+    run(&mut s, "graph.exposed.set", json!({"id": "level", "value": 0.75}));
+    s.cook();
+    let recooked: Vec<u64> = s.cooked.nodes.iter().filter(|(_, r)| !r.cached).map(|(id, _)| id.0).collect();
+    assert_eq!(recooked, [u], "only the node reading `level` re-cooks");
+}
+
+#[test]
 fn presets_store_and_restore_inputs() {
     let mut s = sample_session();
     run(&mut s, "file.new", json!({"template": "empty"}));
@@ -297,6 +339,24 @@ fn view3d_target_is_validated_clamped_and_reset() {
     assert_eq!(s.view3d.target, [0.0; 3]);
 }
 
+/// The height output rises out of the mesh by default; depth and level are clamped and reset with the scene.
+#[test]
+fn view3d_height_depth_and_level_are_clamped_and_reset() {
+    let mut s = sample_session();
+    assert_eq!(s.view3d.height_level, 0.0, "the relief rises out of the surface by default");
+    assert!(s.view3d.height_scale > 0.0);
+
+    let view = run(&mut s, "view.3d", json!({"heightScale": 0.1, "heightLevel": 0.5}));
+    assert_eq!((view["heightScale"].as_f64(), view["heightLevel"].as_f64()), (Some(0.1f32 as f64), Some(0.5)));
+    run(&mut s, "view.3d", json!({"heightScale": 9.0, "heightLevel": -3.0}));
+    assert_eq!((s.view3d.height_scale, s.view3d.height_level), (0.5, 0.0));
+    run(&mut s, "view.3d", json!({"heightLevel": 7.0}));
+    assert_eq!(s.view3d.height_level, 1.0);
+
+    run(&mut s, "view.3d.reset", json!({}));
+    assert_eq!(s.view3d.height_level, 0.0);
+}
+
 #[test]
 fn camera_prefs_bound_the_pan_and_survive_hostile_values() {
     use materialcraft_engine::CameraPrefs;
@@ -315,6 +375,22 @@ fn camera_prefs_bound_the_pan_and_survive_hostile_values() {
     s.set_camera_prefs(CameraPrefs { pan_limit: f32::NAN, pan_speed: -1.0 });
     assert_eq!(s.camera, CameraPrefs::default());
     assert_eq!(CameraPrefs { pan_limit: f32::INFINITY, pan_speed: 2.0 }.sanitized().pan_speed, 2.0);
+}
+
+#[test]
+fn reimported_bitmap_shows_new_pixels() {
+    use materialcraft_formats::{Depth, encode};
+    use materialcraft_image::{Image, Kind};
+    let bmp = |v: f32| encode(&Image::filled(4, 4, Kind::Color, [v, v, v, 1.0]), "bmp", Depth::U8, true).unwrap();
+    let (dark, light) = (bmp(0.1), bmp(0.9));
+    assert_eq!(dark.len(), light.len(), "same-size files are the case under test");
+    let mut s = sample_session();
+    materialcraft_engine::file_cmds::add_resource(&mut s, "tex.bmp", dark, Some("tex")).unwrap();
+    let before = s.resource_decoder()("tex").unwrap().data[0];
+    s.undo();
+    materialcraft_engine::file_cmds::add_resource(&mut s, "tex.bmp", light, Some("tex")).unwrap();
+    let after = s.resource_decoder()("tex").unwrap().data[0];
+    assert!(after - before > 0.5, "{before} -> {after}");
 }
 
 #[test]

@@ -5,12 +5,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
-use std::sync::Arc;
 
 use base64::Engine as _;
 use materialcraft_core::{
     BaseParams, Comment, Connection, ExposedParam, Frame, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, OutputFormat, Package, Resource,
-    SizeMode, Value, linear_to_srgb, missing_ports, srgb_to_linear,
+    ResourceBytes, SizeMode, Value, linear_to_srgb, missing_ports, srgb_to_linear,
 };
 use materialcraft_nodes::{PortKind, find};
 use roxmltree::Node as XmlNode;
@@ -776,7 +775,7 @@ impl<'text> Reader<'text, '_> {
         match bytes {
             Some(data) => {
                 let ext = if kind == "svg" { "svg".to_string() } else { format };
-                pkg.resources.push(Resource { name: name.clone(), file: crate::safe_file_name(&format!("{name}.{ext}")), bytes: Arc::new(data) });
+                pkg.resources.push(Resource::new(name.clone(), crate::safe_file_name(&format!("{name}.{ext}")), ResourceBytes::new(data)));
             }
             None => {
                 let why = if why_missing.is_empty() { "it has no data".to_string() } else { why_missing };
@@ -1074,8 +1073,13 @@ impl<'text> Reader<'text, '_> {
         if let Some(node) = node {
             for param in instance_params() {
                 let param_name = child_value(param, "name").unwrap_or("");
-                match def.param(param_name) {
-                    Some(param_def) => self.set_param(node, param_name, &param_def.default, param_def.options.len(), param, &graph_name),
+                let id = match (def.id, param_name) {
+                    ("histogram_scan", "Position") => "position",
+                    ("histogram_scan", "Contrast") => "contrast",
+                    _ => param_name,
+                };
+                match def.param(id) {
+                    Some(param_def) => self.set_param(node, id, &param_def.default, param_def.options.len(), param, &graph_name),
                     None => self.warnings.add(format!("`{}`: parameter `{param_name}` has no MaterialCraft equivalent and was ignored", def.id)),
                 }
             }
@@ -1086,7 +1090,15 @@ impl<'text> Reader<'text, '_> {
         let port_for = |identifier: &str| if def.output_index(identifier).is_some() { identifier.to_string() } else { first_output.clone() };
         let unbridged = output_uids.iter().filter(|(uid, _)| !bridgings.iter().any(|(b, _)| b == uid)).map(|(uid, _)| (uid.clone(), first_output.clone()));
         let outputs = bridgings.iter().map(|(uid, identifier)| (uid.clone(), port_for(identifier))).chain(unbridged).collect();
-        let inputs = def.inputs.iter().map(|p| (p.id.to_string(), p.id.to_string())).collect();
+        let mut inputs: HashMap<_, _> = def.inputs.iter().map(|p| (p.id.to_string(), p.id.to_string())).collect();
+        let input_aliases: &[(&str, &str)] = match def.id {
+            "histogram_scan" => &[("Input_1", "input")],
+            "auto_levels" => &[("Input", "input")],
+            "flood_fill" => &[("mask", "input")],
+            "height_blend" => &[("height_top", "top"), ("height_bottom", "bottom")],
+            _ => &[],
+        };
+        inputs.extend(input_aliases.iter().map(|&(alias, port)| (alias.to_string(), port.to_string())));
         ReadNode { id, index, inputs, outputs, open_inputs: false }
     }
 
@@ -1369,7 +1381,7 @@ pub fn write_sbs(pkg: &Package) -> Result<Vec<u8>> {
                 if svg { "svg" } else { "bitmap" },
                 xml_escape(ext),
                 resource.bytes.len(),
-                encode_embedded(&resource.bytes)?
+                encode_embedded(resource.bytes.as_slice())?
             );
         }
         content.push_str("</content></group>");
@@ -1853,7 +1865,7 @@ mod tests {
 
         let orange = materialcraft_image::Image::filled(4, 4, materialcraft_image::Kind::Color, [1.0, 0.5, 0.0, 1.0]);
         let png = crate::encode(&orange, "png", crate::Depth::U8, true).unwrap();
-        pkg.resources.push(Resource { name: "tex".into(), file: "tex.png".into(), bytes: Arc::new(png) });
+        pkg.resources.push(Resource::new("tex", "tex.png", ResourceBytes::new(png)));
         pkg
     }
 
@@ -2076,7 +2088,7 @@ mod tests {
         assert!(read.warnings.iter().any(|w| w.contains("missing node `3D_perlin_noise`")), "{:?}", &read.warnings[..5]);
         assert!(read.pkg.resources.iter().any(|r| r.name == "Untitled_Bitmap" && !r.bytes.is_empty()));
         let svg = read.pkg.resources.iter().find(|r| r.name == "Untitled_Vector_Graphics").unwrap();
-        assert!(String::from_utf8_lossy(&svg.bytes).contains("<svg"));
+        assert!(String::from_utf8_lossy(svg.bytes.as_slice()).contains("<svg"));
         assert_eq!(graph.frames.len(), 26);
         assert_eq!(graph.size, [11, 11]);
 

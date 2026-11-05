@@ -361,7 +361,8 @@ fn contrast_luminosity(ctx: &Ctx) -> CookResult {
 }
 
 fn exposure(ctx: &Ctx) -> CookResult {
-    let k = 2f32.powf(ctx.f("stops"));
+    // Past +-64 stops the result is all black/white anyway; this keeps 2^stops finite.
+    let k = 2f32.powf(ctx.f("stops").clamp(-64.0, 64.0));
     per_value(ctx, |v| v * k)
 }
 
@@ -505,8 +506,11 @@ fn anisotropic_blur(ctx: &Ctx) -> CookResult {
 }
 
 fn blur_xy(img: &Image, sx: f32, sy: f32, tile: bool) -> Image {
+    if !sx.is_finite() || !sy.is_finite() {
+        return img.clone();
+    }
     // Separable: a horizontal-only Gaussian is a 2D one on an image stretched vertically, so
-    // blur fully with the smaller sigma and add the extra along x by repeated small passes.
+    // blur fully with the smaller sigma and add the extra along x.
     let cap = img.w.max(img.h) as f32;
     let (sx, sy) = (sx.min(cap), sy.min(cap));
     let base = ops::gaussian(img, sy, tile);
@@ -672,7 +676,8 @@ fn edge_detect(ctx: &Ctx) -> CookResult {
         .map(|(a, b)| {
             let d = a.sqrt().max(b.sqrt());
             let t = (1.0 - d / w).max(0.0);
-            t.powf(1.0 - round * 0.8)
+            // A non-positive exponent on t = 0 gives inf; in range (round <= 1) it is >= 0.2.
+            t.powf((1.0 - round * 0.8).max(0.01))
         })
         .collect();
     Ok(vec![ops::gray_from(ctx.w, ctx.h, v)])
