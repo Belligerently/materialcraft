@@ -1,6 +1,6 @@
 //! # materialcraft-formats
 //!
-//! File formats, L2: the native `.mcraft` package (a zip holding `package.json` and the embedded
+//! File formats, L2: SBS packages (`.sbs`, the main project format, see [`sbs`]), the older native `.mcraft` package (a zip holding `package.json` and the embedded
 //! `resources/`), bitmap decoding for Bitmap nodes, and texture export (PNG 8/16, JPEG, TGA,
 //! TIFF 8/16, BMP, WEBP, EXR 32F, HDR) with the output naming pattern, and meshes for the 3D view
 //! (OBJ, glTF/GLB), and portable materials (`.mcmat`, see [`material`]). Byte-based APIs work
@@ -10,7 +10,9 @@
 
 pub mod material;
 pub mod mesh;
+pub mod sbs;
 
+use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
@@ -32,6 +34,10 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 /// Largest `package.json` and resource accepted when reading (allocation caps).
 const MAX_JSON: u64 = 64 << 20;
 const MAX_RESOURCE: u64 = 256 << 20;
+/// Most resource records a package may list.
+const MAX_RESOURCES: usize = 4096;
+/// Most decompressed bytes a package may hold across `package.json` and all its resources.
+const MAX_PACKAGE_BYTES: u64 = 2 << 30;
 
 /// Export file types: (extension, label).
 pub const EXPORT_FORMATS: &[(&str, &str)] =
@@ -63,6 +69,11 @@ pub fn save_package(pkg: &Package) -> Result<Vec<u8>> {
 
 /// Read a package from `.mcraft` bytes.
 pub fn load_package(bytes: &[u8]) -> Result<Package> {
+    load_package_within(bytes, MAX_PACKAGE_BYTES)
+}
+
+/// [`load_package`] with an explicit cap on the total decompressed bytes.
+fn load_package_within(bytes: &[u8], max_total: u64) -> Result<Package> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::BadPackage(e.to_string()))?;
     let mut json = Vec::new();
     z.by_name("package.json")
@@ -71,15 +82,35 @@ pub fn load_package(bytes: &[u8]) -> Result<Package> {
         .read_to_end(&mut json)
         .map_err(|e| FormatError::Io(e.to_string()))?;
     let mut pkg: Package = serde_json::from_slice(&json).map_err(|e| FormatError::BadPackage(e.to_string()))?;
+    if pkg.resources.len() > MAX_RESOURCES {
+        return Err(FormatError::BadPackage(format!("{} resources (limit {MAX_RESOURCES})", pkg.resources.len())));
+    }
+    let mut total = json.len() as u64;
+    let mut read: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
     for r in &mut pkg.resources {
         let name = format!("resources/{}", safe_file_name(&r.file));
+        if let Some(shared) = read.get(&name) {
+            r.bytes = Arc::clone(shared);
+            continue;
+        }
         let mut data = Vec::new();
         if let Ok(mut f) = z.by_name(&name) {
             f.by_ref().take(MAX_RESOURCE).read_to_end(&mut data).map_err(|e| FormatError::Io(e.to_string()))?;
         }
-        r.bytes = Arc::new(data);
+        total = total.saturating_add(data.len() as u64);
+        if total > max_total {
+            return Err(FormatError::BadPackage(format!("package resources exceed {max_total} bytes")));
+        }
+        let data = Arc::new(data);
+        read.insert(name, Arc::clone(&data));
+        r.bytes = data;
     }
     Ok(pkg)
+}
+
+/// Last-resort guard around third-party parsers: a panic inside them becomes an error.
+pub(crate) fn guard<T>(f: impl FnOnce() -> Result<T>, err: impl FnOnce() -> FormatError) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| Err(err()))
 }
 
 /// A file name with no path parts (resources live flat in `resources/`).
@@ -93,10 +124,25 @@ pub fn safe_file_name(name: &str) -> String {
 /// Decode image file bytes into a linear float image (8-bit color is sRGB-decoded; grayscale
 /// files stay grayscale).
 pub fn decode(bytes: &[u8]) -> Result<Image> {
-    // TGA has no signature: try it when the format cannot be guessed.
-    let img = image::load_from_memory(bytes)
-        .or_else(|e| image::load_from_memory_with_format(bytes, image::ImageFormat::Tga).map_err(|_| e))
-        .map_err(|e| FormatError::Image(e.to_string()))?;
+    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| FormatError::Image(e.to_string()))?;
+    if reader.format().is_none() {
+        // TGA has no signature: try it when the format cannot be guessed.
+        reader.set_format(image::ImageFormat::Tga);
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    limits.max_alloc = Some(1 << 30);
+    reader.limits(limits);
+    let img = guard(
+        || {
+            reader.decode().map_err(|e| match e {
+                image::ImageError::Limits(_) => FormatError::Image(format!("image is larger than {MAX_SIDE} pixels")),
+                e => FormatError::Image(e.to_string()),
+            })
+        },
+        || FormatError::Image("the decoder failed on this file".into()),
+    )?;
     let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return Err(FormatError::Image(format!("{w}x{h} is outside 1..={MAX_SIDE} pixels")));
@@ -108,14 +154,14 @@ pub fn decode(bytes: &[u8]) -> Result<Image> {
         let data: Vec<f32> = l.pixels().map(|p| p.0[0] as f32 / 65535.0).collect();
         return Ok(Image { w, h, kind: Kind::Gray, data: Arc::new(data) });
     }
-    let rgba = img.into_rgba32f();
-    let data: Vec<f32> = rgba
-        .pixels()
-        .flat_map(|p| {
-            let [r, g, b, a] = p.0;
-            if float { [r, g, b, a] } else { [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), a] }
-        })
-        .collect();
+    let mut data = img.into_rgba32f().into_raw();
+    if !float {
+        for px in data.chunks_exact_mut(4) {
+            for c in px.iter_mut().take(3) {
+                *c = srgb_to_linear(*c);
+            }
+        }
+    }
     Ok(Image { w, h, kind: Kind::Color, data: Arc::new(data) })
 }
 
@@ -271,5 +317,77 @@ mod tests {
         assert_eq!(output_name("$(graph)_$(usage)", "Bricks", "out", "baseColor"), "Bricks_baseColor");
         assert_eq!(safe_file_name("../../etc/passwd"), "passwd");
         assert_eq!(safe_file_name(".."), "resource");
+    }
+
+    fn zip_with(json: &serde_json::Value, entries: &[(&str, usize)]) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            z.start_file("package.json", opts).unwrap();
+            z.write_all(json.to_string().as_bytes()).unwrap();
+            for (name, len) in entries {
+                z.start_file(format!("resources/{name}"), opts).unwrap();
+                z.write_all(&vec![0u8; *len]).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    fn package_json(files: &[&str]) -> serde_json::Value {
+        let base = serde_json::to_value(Package::new("T")).unwrap();
+        let mut v = base;
+        v["resources"] = files.iter().map(|f| serde_json::json!({ "name": "r", "file": f })).collect();
+        v
+    }
+
+    #[test]
+    fn many_records_share_one_entry() {
+        let files = vec!["big.bin"; 1000];
+        let bytes = zip_with(&package_json(&files), &[("big.bin", 1 << 20)]);
+        let pkg = load_package(&bytes).unwrap();
+        assert_eq!(pkg.resources.len(), 1000);
+        assert_eq!(pkg.resources[0].bytes.len(), 1 << 20);
+        assert!(Arc::ptr_eq(&pkg.resources[0].bytes, &pkg.resources[999].bytes));
+    }
+
+    #[test]
+    fn too_many_resources_is_an_error() {
+        let files = vec!["a.bin"; MAX_RESOURCES + 1];
+        let bytes = zip_with(&package_json(&files), &[("a.bin", 4)]);
+        assert!(load_package(&bytes).is_err());
+    }
+
+    #[test]
+    fn total_budget_is_enforced() {
+        let bytes = zip_with(&package_json(&["a.bin", "b.bin"]), &[("a.bin", 1 << 20), ("b.bin", 1 << 20)]);
+        assert!(load_package_within(&bytes, 3 << 19).is_err());
+        assert!(load_package_within(&bytes, 3 << 20).is_ok());
+    }
+
+    #[test]
+    fn oversized_images_are_refused_before_decoding() {
+        let mut png = Cursor::new(Vec::new());
+        image::GrayImage::new(8193, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let err = decode(png.get_ref()).unwrap_err().to_string();
+        assert!(err.contains("8192"), "{err}");
+    }
+
+    #[test]
+    fn tga_still_decodes() {
+        let mut tga = Cursor::new(Vec::new());
+        image::RgbaImage::new(2, 2).write_to(&mut tga, image::ImageFormat::Tga).unwrap();
+        let img = decode(tga.get_ref()).unwrap();
+        assert_eq!((img.w, img.h, img.kind), (2, 2, Kind::Color));
+    }
+
+    #[test]
+    fn decode_matches_previous_values() {
+        let mut png = Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(2, 2, image::Rgb([128, 128, 128])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let img = decode(png.get_ref()).unwrap();
+        let want = srgb_to_linear(128.0 / 255.0);
+        assert!((img.get(1, 1, false)[0] - want).abs() < 1e-4);
     }
 }

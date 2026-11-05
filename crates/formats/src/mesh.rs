@@ -47,7 +47,10 @@ pub fn load_mesh(name: &str, bytes: &[u8]) -> Result<Mesh> {
 fn obj(bytes: &[u8]) -> Result<Mesh> {
     let mut reader = std::io::BufReader::new(bytes);
     let opts = tobj::LoadOptions { triangulate: true, single_index: true, ..Default::default() };
-    let (models, _) = tobj::load_obj_buf(&mut reader, &opts, |_| Ok((Vec::new(), Default::default()))).map_err(|e| bad(format!("OBJ: {e}")))?;
+    let (models, _) = crate::guard(
+        || tobj::load_obj_buf(&mut reader, &opts, |_| Ok((Vec::new(), Default::default()))).map_err(|e| bad(format!("OBJ: {e}"))),
+        || bad("the OBJ parser failed on this file"),
+    )?;
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -75,7 +78,7 @@ fn obj(bytes: &[u8]) -> Result<Mesh> {
 }
 
 fn gltf(bytes: &[u8]) -> Result<Mesh> {
-    let (doc, buffers, _) = gltf::import_slice(bytes).map_err(|e| bad(format!("glTF: {e}")))?;
+    let (doc, buffers, _) = crate::guard(|| gltf::import_slice(bytes).map_err(|e| bad(format!("glTF: {e}"))), || bad("the glTF parser failed on this file"))?;
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
