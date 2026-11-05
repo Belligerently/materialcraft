@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn material_export_cannot_escape_the_write_root() {
-        let (inside, outside, h) = workspace_session("mat-escape", true);
+        let (_inside, outside, h) = workspace_session("mat-escape", true);
         let abs = outside.join("abs.mcmat").display().to_string();
         for p in ["../outside/m.mcmat", "a/../../outside/m.mcmat", "/tmp/m.mcmat", "a\\b.mcmat", "C:/m.mcmat", "./m.mcmat", abs.as_str()] {
             let e = call(&h, "material.export", json!({"path": p, "size": 16}));
@@ -338,7 +338,7 @@ mod tests {
         }
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(&outside, inside.join("link")).unwrap();
+            std::os::unix::fs::symlink(&outside, _inside.join("link")).unwrap();
             assert!(call(&h, "material.export", json!({"path": "link/m.mcmat", "size": 16})).is_err());
         }
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing written outside the root");

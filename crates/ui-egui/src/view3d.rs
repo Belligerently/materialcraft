@@ -59,9 +59,9 @@ pub struct View3dState {
 }
 
 impl View3dState {
-    /// A full-quality frame is rendering in the background.
+    /// A frame or its displaced geometry is still being built in the background.
     pub fn busy(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.relief_job.is_some()
     }
 }
 
@@ -406,17 +406,19 @@ fn relief_key(app: &MaterialCraftApp, scene_key: &str, maps: &Maps) -> Option<u6
 fn update_relief(app: &mut MaterialCraftApp, ctx: &egui::Context) -> Option<u64> {
     let (scene_key, base) = base_scene(app);
     let maps = Maps::from_usages(app.session.material_maps());
-    let wanted = relief_key(app, &scene_key, &maps)?;
+    let wanted = relief_key(app, &scene_key, &maps);
 
     if let Some(job) = app.view3d.relief_job.take() {
         match job.rx.try_recv() {
-            Ok(Some(scene)) if job.key == wanted => app.view3d.displaced = Some((job.key, scene)),
+            Ok(Some(scene)) if Some(job.key) == wanted => app.view3d.displaced = Some((job.key, scene)),
             Ok(_) | Err(TryRecvError::Disconnected) => {}
             // Finish the active build before starting a newer one. Dropping its receiver
             // cannot cancel subdivision, so rapid edits must not accumulate workers.
             Err(TryRecvError::Empty) => app.view3d.relief_job = Some(job),
         }
     }
+
+    let wanted = wanted?;
 
     if app.view3d.displaced.as_ref().is_some_and(|(key, _)| *key == wanted) {
         return Some(wanted);
@@ -567,6 +569,7 @@ mod tests {
             app.session.view3d.height_scale = index as f32 * 0.001;
             assert_eq!(update_relief(&mut app, &ctx), None);
             assert_eq!(app.view3d.relief_job.as_ref().unwrap().key, old_key, "a second subdivision worker started");
+            assert!(app.view3d.busy(), "geometry work must count as a busy view");
         }
         let wanted = relief_key(&app, &scene_key, &maps).unwrap();
         assert_ne!(old_key, wanted);
@@ -574,6 +577,7 @@ mod tests {
         tx.send(Some(Arc::new(Scene::builtin("sphere")))).unwrap();
         assert_eq!(update_relief(&mut app, &ctx), Some(wanted));
         assert!(app.view3d.relief_job.is_none());
+        assert!(!app.view3d.busy());
         assert!(Arc::ptr_eq(&app.view3d.displaced.as_ref().unwrap().1, &base), "outdated geometry replaced the current scene");
     }
 
