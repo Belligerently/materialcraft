@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
 use materialcraft_image::{Image, Kind};
-use materialcraft_nodes::{Ctx, NodeDef, PortKind, find, resolve_params};
+use materialcraft_nodes::{Ctx, NodeDef, PortKind, clamp_params, find, resolve_params};
 
 /// Sub-graphs may nest this deep (a graph instancing itself would recurse forever).
 pub const MAX_DEPTH: u32 = 8;
@@ -352,6 +352,12 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
             Err(e) => return fail(format!("function of `{param}`: {e}"), 0),
         }
     }
+    // Bound and computed values obey the declared ranges too.
+    if let Some(d) = def
+        && node.def != "graph_instance"
+    {
+        clamp_params(d, &mut params);
+    }
     let tile = node.base.tiling[0] && node.base.tiling[1];
     // Input nodes read the caller's image for their identifier.
     let input_img = node.def.starts_with("input_").then(|| opts.inputs.get(&identifier(node))).flatten();
@@ -567,5 +573,30 @@ mod tests {
         opts.inputs.insert("curvature".into(), Image::filled(4, 4, Kind::Gray, [0.1; 4]));
         let c = cook(&p, 0, &opts, &mut cache);
         assert!((c.image(o, 0).unwrap().data[0] - 0.1).abs() < 1e-4);
+    }
+
+    /// A bound exposed value outside the parameter's declared range is clamped before the cook:
+    /// opacity 5 would otherwise extrapolate the blend to 5.
+    #[test]
+    fn bound_values_are_clamped_to_the_declared_range() {
+        let mut g = Graph::new("g");
+        g.size = [4, 4];
+        let white = g.add_node("uniform", [0.0, 0.0]);
+        g.node_mut(white).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(white).unwrap().params.insert("color".into(), Value::Color([1.0, 1.0, 1.0, 1.0]));
+        let black = g.add_node("uniform", [0.0, 100.0]);
+        g.node_mut(black).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(black).unwrap().params.insert("color".into(), Value::Color([0.0, 0.0, 0.0, 1.0]));
+        let blend = g.add_node("blend", [100.0, 0.0]);
+        g.connect(white, "output", blend, "foreground").unwrap();
+        g.connect(black, "output", blend, "background").unwrap();
+        g.node_mut(blend).unwrap().bindings.insert("opacity".into(), "o".into());
+        let mut p = Package::new("p");
+        p.graphs.push(g);
+        let mut opts = Options::new(&no_res);
+        opts.overrides.insert("o".into(), Value::Float(5.0));
+        let c = cook(&p, 0, &opts, &mut Cache::default());
+        let v = c.image(blend, 0).unwrap().data[0];
+        assert!((v - 1.0).abs() < 1e-4, "blend value {v}");
     }
 }

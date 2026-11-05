@@ -28,7 +28,7 @@ pub mod svg;
 pub mod text;
 pub mod weathering;
 
-pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, find, resolve_params};
+pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, clamp_params, find, resolve_params};
 
 #[cfg(test)]
 mod tests {

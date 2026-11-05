@@ -363,5 +363,32 @@ pub fn resolve_params(def: &NodeDef, overrides: &BTreeMap<String, Value>) -> BTr
             m.insert(k.clone(), v.clone());
         }
     }
+    clamp_params(def, &mut m);
     m
 }
+
+/// Clamp every numeric parameter in `params` to its declared range (non-finite values fall back
+/// to the default). Angles, enums, colors and other kinds are left alone.
+pub fn clamp_params(def: &NodeDef, params: &mut BTreeMap<String, Value>) {
+    for d in &def.params {
+        let ranged = d.min < d.max;
+        if d.angle || !ranged {
+            continue;
+        }
+        let Some(v) = params.get_mut(d.id) else { continue };
+        let f = |x: f32, dflt: f32| if x.is_finite() { x.clamp(d.min, d.max) } else { dflt };
+        match (v, &d.default) {
+            (Value::Float(x), Value::Float(dflt)) => *x = f(*x, *dflt),
+            (Value::Int(x), _) => *x = (*x).clamp(d.min as i32, d.max as i32),
+            (Value::Float2(x), Value::Float2(dflt)) => {
+                x[0] = f(x[0], dflt[0]);
+                x[1] = f(x[1], dflt[1]);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "catalog.test.rs"]
+mod tests;
