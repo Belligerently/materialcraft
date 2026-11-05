@@ -300,9 +300,32 @@ pub fn srgb_to_linear(v: f32) -> f32 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Marker appended to a bitmap resource name asking the resource decoder for the file's values
+/// as stored (a data map such as a normal map), instead of sRGB-decoding 8/16-bit color.
+const LINEAR_MARK: &str = "\u{1}linear";
+
+/// The resource-decoder key for `name`, read as data (`linear`) or as sRGB color.
+pub fn resource_key(name: &str, linear: bool) -> String {
+    if linear { format!("{name}{LINEAR_MARK}") } else { name.to_string() }
+}
+
+/// Split a key made by [`resource_key`] into the resource name and whether it is read as data.
+pub fn split_resource_key(key: &str) -> (&str, bool) {
+    match key.strip_suffix(LINEAR_MARK) {
+        Some(name) => (name, true),
+        None => (key, false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_keys_round_trip() {
+        assert_eq!(split_resource_key(&resource_key("n", true)), ("n", true));
+        assert_eq!(split_resource_key(&resource_key("n", false)), ("n", false));
+    }
 
     #[test]
     fn sample_wraps_and_clamps() {

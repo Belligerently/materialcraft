@@ -265,7 +265,11 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
     // The top-level graph's input nodes show their preview images; the caller's images win.
     let bound;
     let opts = if opts.depth == 0 && !graph.input_images.is_empty() {
-        let mut inputs: BTreeMap<String, Image> = graph.input_images.iter().filter_map(|(id, res)| Some((id.clone(), (opts.resource)(res)?))).collect();
+        let mut inputs: BTreeMap<String, Image> = graph
+            .input_images
+            .iter()
+            .filter_map(|(id, res)| Some((id.clone(), (opts.resource)(&materialcraft_image::resource_key(res, graph.input_images_linear.contains(id)))?)))
+            .collect();
         inputs.extend(opts.inputs.iter().map(|(k, v)| (k.clone(), v.clone())));
         bound = Options { only: opts.only.clone(), inputs, overrides: opts.overrides.clone(), ..*opts };
         &bound
@@ -567,5 +571,32 @@ mod tests {
         opts.inputs.insert("curvature".into(), Image::filled(4, 4, Kind::Gray, [0.1; 4]));
         let c = cook(&p, 0, &opts, &mut cache);
         assert!((c.image(o, 0).unwrap().data[0] - 0.1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn linear_input_images_and_bitmap_nodes_request_data_reads() {
+        // The decoder returns 0.5 for a linear request and 0.2 for an sRGB one.
+        let res = |k: &str| {
+            let (name, linear) = materialcraft_image::split_resource_key(k);
+            (name == "m").then(|| Image::filled(4, 4, Kind::Color, [if linear { 0.5 } else { 0.2 }; 4]))
+        };
+        let mut p = Package::new("p");
+        let mut g = Graph::new("g");
+        g.size = [4, 4];
+        let i = g.add_node("input_color", [0.0, 0.0]);
+        g.node_mut(i).unwrap().params.insert("identifier".into(), Value::Text("n".into()));
+        let b = g.add_node("bitmap", [0.0, 100.0]);
+        g.node_mut(b).unwrap().params.insert("resource".into(), Value::Text("m".into()));
+        g.input_images.insert("n".into(), "m".into());
+        p.graphs.push(g);
+        let first = |p: &Package| {
+            let mut cache = Cache::default();
+            let c = cook(p, 0, &Options::new(&res), &mut cache);
+            (c.image(i, 0).unwrap().data[0], c.image(b, 0).unwrap().data[0])
+        };
+        assert_eq!(first(&p), (0.2, 0.2), "default is sRGB, as before");
+        p.graphs[0].input_images_linear.insert("n".into());
+        p.graphs[0].node_mut(b).unwrap().params.insert("colour_space".into(), Value::Enum(1));
+        assert_eq!(first(&p), (0.5, 0.5));
     }
 }

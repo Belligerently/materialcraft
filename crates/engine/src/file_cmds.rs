@@ -325,7 +325,7 @@ fn export(_: &mut Session, _: &J) -> Result<J> {
 
 /// Embed image bytes as a resource; returns the resource name.
 pub fn add_resource(s: &mut Session, file: &str, bytes: Vec<u8>, name: Option<&str>) -> Result<String> {
-    materialcraft_formats::decode(&bytes)?;
+    materialcraft_formats::decode(&bytes, false)?;
     s.edit("Import bitmap", |s| Ok(push_resource(&mut s.pkg, file, bytes, name)))
 }
 

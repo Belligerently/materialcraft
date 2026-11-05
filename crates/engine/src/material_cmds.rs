@@ -40,7 +40,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             "Set input preview image",
             [],
             None,
-            "{identifier, resource? | path?} shows a bitmap resource (or an image file, embedded) on the graph's input node `identifier`, e.g. a mesh map baked in TextureCraft",
+            "{identifier, resource? | path?, linear?} shows a bitmap resource (or an image file, embedded) on the graph's input node `identifier`, e.g. a mesh map baked in TextureCraft; `linear: true` reads a data map (normal, height) as stored instead of sRGB-decoding it",
             has_graph,
             bind
         ),
@@ -154,7 +154,7 @@ fn export_material(s: &mut Session, p: &J) -> Result<J> {
     for (id, file) in p.get("inputs").and_then(J::as_object).into_iter().flatten() {
         let file = file.as_str().ok_or_else(|| bad(CMD, format!("inputs.{id} must be an image path")))?;
         let bytes = std::fs::read(file).map_err(|e| bad(CMD, format!("{file}: {e}")))?;
-        o.inputs.insert(id.clone(), materialcraft_formats::decode(&bytes)?);
+        o.inputs.insert(id.clone(), materialcraft_formats::decode(&bytes, false)?);
     }
     let bytes = material_bytes(s, gi, &o)?;
     materialcraft_formats::write_atomic(std::path::Path::new(&path), &bytes)?;
@@ -215,7 +215,14 @@ fn bind(s: &mut Session, p: &J) -> Result<J> {
             Some((name, bytes)) => crate::file_cmds::push_resource(&mut s.pkg, &name, bytes, Some(&id)),
             None => strp(p, "resource").unwrap_or_default().to_string(),
         };
-        s.graph_mut()?.input_images.insert(id.clone(), res.clone());
+        let linear = p.get("linear").and_then(J::as_bool).unwrap_or(false);
+        let g = s.graph_mut()?;
+        g.input_images.insert(id.clone(), res.clone());
+        if linear {
+            g.input_images_linear.insert(id.clone());
+        } else {
+            g.input_images_linear.remove(&id);
+        }
         Ok(json!({"identifier": id, "resource": res}))
     })
 }
@@ -223,7 +230,7 @@ fn bind(s: &mut Session, p: &J) -> Result<J> {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_image_file(cmd: &str, path: &str) -> Result<(String, Vec<u8>)> {
     let bytes = std::fs::read(path).map_err(|e| bad(cmd, format!("{path}: {e}")))?;
-    materialcraft_formats::decode(&bytes)?;
+    materialcraft_formats::decode(&bytes, false)?;
     let name = std::path::Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or("input.png").to_string();
     Ok((name, bytes))
 }
@@ -235,7 +242,10 @@ fn read_image_file(cmd: &str, _: &str) -> Result<(String, Vec<u8>)> {
 
 fn unbind(s: &mut Session, p: &J) -> Result<J> {
     let id = strp(p, "identifier").ok_or_else(|| bad("graph.input.unbind", "`identifier` is required"))?.to_string();
-    s.edit("Clear input preview image", |s| Ok(J::Bool(s.graph_mut()?.input_images.remove(&id).is_some())))
+    s.edit("Clear input preview image", |s| {
+        s.graph_mut()?.input_images_linear.remove(&id);
+        Ok(J::Bool(s.graph_mut()?.input_images.remove(&id).is_some()))
+    })
 }
 
 #[cfg(test)]

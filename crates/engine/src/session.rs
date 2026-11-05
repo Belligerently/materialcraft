@@ -300,13 +300,14 @@ impl Session {
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
         let res: Vec<(String, Arc<Vec<u8>>)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
-        move |name: &str| {
+        move |requested: &str| {
+            let (name, linear) = materialcraft_image::split_resource_key(requested);
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = format!("{name}:{}", bytes.len());
+            let key = format!("{requested}:{}", bytes.len());
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes).ok()?;
+            let img = materialcraft_formats::decode(bytes, linear).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
@@ -402,3 +403,7 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session.test.rs"]
+mod tests;
