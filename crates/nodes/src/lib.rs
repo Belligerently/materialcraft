@@ -28,12 +28,13 @@ pub mod svg;
 pub mod text;
 pub mod weathering;
 
-pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, find, resolve_params};
+pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, clamp_params, find, resolve_params};
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
+    use materialcraft_core::Value;
     use materialcraft_image::{Image, Kind};
 
     use super::*;
@@ -70,6 +71,50 @@ mod tests {
             }
         }
         assert!(catalog().len() >= 200, "{} nodes", catalog().len());
+    }
+
+    /// Every node cooks with each numeric parameter at a hostile value (huge, negative huge, NaN):
+    /// the hard limits keep the cook bounded, finite and the right size.
+    #[test]
+    fn every_node_survives_hostile_params() {
+        use std::time::{Duration, Instant};
+
+        let mut slow: Vec<(String, Duration)> = Vec::new();
+        let total = Instant::now();
+        for def in catalog() {
+            if def.id == "graph_instance" {
+                continue;
+            }
+            for p in &def.params {
+                for h in [1e30_f32, -1e30, f32::NAN] {
+                    let v = match p.default {
+                        Value::Float(_) => Value::Float(h),
+                        Value::Int(_) => Value::Int(h as i32),
+                        Value::Float2(_) => Value::Float2([h, h]),
+                        Value::Enum(_) => Value::Enum(h as u32),
+                        _ => continue,
+                    };
+                    let mut params = resolve_params(def, &BTreeMap::from([(p.id.to_string(), v)]));
+                    clamp_params(def, &mut params);
+                    let inputs = vec![None; def.inputs.len()];
+                    let no_res = |_: &str| None;
+                    let vars = BTreeMap::new();
+                    let ctx = Ctx { w: 16, h: 16, seed: 7, tile: true, inputs: &inputs, params: &params, resource: &no_res, vars: &vars };
+                    let t = Instant::now();
+                    let out = (def.cook)(&ctx).unwrap_or_else(|e| panic!("{}.{}={h}: {e}", def.id, p.id));
+                    let dt = t.elapsed();
+                    assert!(dt < Duration::from_secs(2), "{}.{}={h} took {dt:?}", def.id, p.id);
+                    if dt > Duration::from_millis(250) {
+                        slow.push((format!("{}.{}={h}", def.id, p.id), dt));
+                    }
+                    for img in &out {
+                        assert_eq!((img.w, img.h), (16, 16), "{}.{}={h}", def.id, p.id);
+                        assert!(img.data.iter().all(|x| x.is_finite()), "{}.{}={h} produced a non-finite value", def.id, p.id);
+                    }
+                }
+            }
+        }
+        eprintln!("hostile params: total {:?}; cooks over 250 ms: {slow:?}", total.elapsed());
     }
 
     #[test]

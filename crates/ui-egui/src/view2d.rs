@@ -88,13 +88,7 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         let (r, resp) = ui.allocate_exact_size(ui.available_size(), Sense::hover());
         crate::widgets::name(&resp, egui::Role::Image, "2D view");
         ui.painter().rect_filled(r, 0.0, tk.viewport);
-        ui.painter().text(
-            r.center(),
-            egui::Align2::CENTER_CENTER,
-            tr("Double-click a node to show it here"),
-            egui::FontId::proportional(12.0),
-            tk.viewport_text,
-        );
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, tr("Click a node to show it here"), egui::FontId::proportional(12.0), tk.viewport_text);
         return;
     };
     let key = app.session.cooked.nodes.get(&id).map_or(0, |r| r.key)

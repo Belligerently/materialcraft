@@ -1,15 +1,16 @@
 //! The graph editor: a pannable, zoomable canvas of node cards (colored header, live thumbnail,
 //! size label), bezier wires between typed ports, frames, comments and navigation pins.
 //!
-//! Gestures: left-drag a node to move it (the selection moves together), drag from a port to wire
-//! it (dropping on empty canvas opens the node search, wired), drag an input to unplug and re-route
-//! it, drag the empty canvas to box-select (Ctrl adds), middle-drag or Alt+drag to pan, wheel to
-//! zoom, double-click a node to show it in the 2D view (a graph instance opens its graph), Space, Tab or
-//! double-click the canvas for the node search, right-click for menus, drop library items to add
-//! them. Click a wire to select it (Shift or Ctrl+click adds more; Delete removes them, X swaps
-//! where they come from), drag a wire to pull a reroute dot out of it, double-click a wire to drop
-//! a dot there, right-click a wire for its menu. Every edit is an
-//! engine command; the gestures only draw previews until they commit.
+//! Gestures: left-drag a node to move it (the selection moves together), drag from an output to wire
+//! it (dropping on empty canvas opens the node search, wired), drag from an unconnected input to an
+//! output to wire it the other way, drag a connected input to unplug and re-route it, drag the empty
+//! canvas to box-select (Ctrl adds), middle-drag or Alt+drag to pan, wheel to zoom.
+//! Click a node to show it in the 2D view (double-click a graph instance to open its graph).
+//! Space, Tab or double-click the canvas for the node search, right-click for menus, drop library
+//! items to add them. Click a wire to select it (Shift or Ctrl+click adds more; Delete removes them,
+//! X swaps where they come from), drag a wire to pull a reroute dot out of it, double-click a wire
+//! to drop a dot there, right-click a wire for its menu. Every edit is an engine command; the
+//! gestures only draw previews until they commit.
 
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;
@@ -50,6 +51,10 @@ enum Drag {
         wire: WireRef,
         start: Pos2,
     },
+    WireFromInput {
+        to: (NodeId, String),
+    },
+
     Pan,
     Frame {
         id: u64,
@@ -618,7 +623,23 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
             let footer = Rect::from_min_max(pos2(sr.left(), body.bottom()), sr.max);
             if let Some(img) = result.and_then(|r| r.outputs.first()) {
                 let bits = if n.base.format == materialcraft_engine::core::OutputFormat::Inherit { g.format.bits() } else { n.base.format.bits() };
-                let txt = format!("{}x{} - {}{}", img.w, img.h, if img.is_gray() { "L" } else { "C" }, bits);
+                let format = format!("{}{}", if img.is_gray() { "L" } else { "C" }, bits);
+                let txt = if let Some(limit) = app.session.preview_size {
+                    if error.is_none() {
+                        let [pw, ph] = g.size_px();
+                        resp.clone().on_hover_text(format!(
+                            "{} x {} ({format}bpc)\n{}: {pw} x {ph}\n{}: {limit} px\n{}",
+                            img.w,
+                            img.h,
+                            tr("Parent size"),
+                            tr("Preview limit"),
+                            tr("Change Preview size while editing in Edit > Preferences. Exports use each node's configured output size.")
+                        ));
+                    }
+                    format!("{}x{} {}", img.w, img.h, tr("Preview"))
+                } else {
+                    format!("{}x{} - {format}", img.w, img.h)
+                };
                 painter.text(footer.center(), Align2::CENTER_CENTER, txt, small.clone(), tk.text_dim);
             }
             if n.def == "output" {
@@ -724,6 +745,11 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
                 bezier(&painter, src.pos, p, Stroke::new(2.0, tk.accent));
             }
         }
+        Some(Drag::WireFromInput { to }) => {
+            if let (Some(p), Some(dst)) = (pointer, app.graph.ports.iter().find(|h| !h.output && h.node == to.0 && h.port == to.1)) {
+                bezier(&painter, p, dst.pos, Stroke::new(2.0, tk.accent));
+            }
+        }
         _ => {}
     }
 
@@ -813,6 +839,8 @@ fn handle_input(
                     app.graph.drag = Some(Drag::Wire { from: (h.node, h.port.clone()), detached: None });
                 } else if let Some(c) = app.session.graph().ok().and_then(|g| g.input_of(h.node, &h.port).cloned()) {
                     app.graph.drag = Some(Drag::Wire { from: (c.from, c.from_port.clone()), detached: Some((h.node, h.port.clone())) });
+                } else {
+                    app.graph.drag = Some(Drag::WireFromInput { to: (h.node, h.port.clone()) });
                 }
             } else if let Some((id, title, grip)) = frames.iter().find(|(_, t, g)| t.contains(p) || g.contains(p)) {
                 let resize = grip.contains(p) && !title.contains(p);
@@ -935,6 +963,12 @@ fn handle_input(
                     }
                 }
             }
+            Drag::WireFromInput { to } => {
+                let source = pointer.and_then(|p| nearest_port(&app.graph.ports, p, 12.0)).filter(|h| h.output).cloned();
+                if let Some(s) = source {
+                    app.run("graph.connect", json!({"from": s.node.0, "fromPort": s.port, "to": to.0.0, "toPort": to.1}));
+                }
+            }
             Drag::Frame { id, delta, resize, nodes } => {
                 if delta.length() > 0.5
                     && let Some(f) = app.session.graph().ok().and_then(|g| g.frames.iter().find(|f| f.id == id)).cloned()
@@ -976,6 +1010,10 @@ fn handle_input(
                     app.run("view.2d", json!({"node": id.0, "port": 0}));
                 }
             }
+        } else if r.clicked() && app.session.selection.contains(id) && app.session.view2d.node != Some(*id) {
+            // A click that leaves the node selected shows it, replacing a node shown earlier (a
+            // Ctrl+click that deselects it does not; the shown node keeps its chosen port).
+            app.run("view.2d", json!({"node": id.0}));
         }
         r.context_menu(|ui| node_menu(app, ui, *id));
     }
@@ -1114,7 +1152,7 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
                 pick = Some(d.id);
             }
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                for (i, d) in list.iter().enumerate().take(60) {
+                for (i, d) in list.iter().enumerate() {
                     let r = ui.add(
                         egui::Button::selectable(i == s.sel, format!("{}   ", d.label))
                             .right_text(egui::RichText::new(d.group()).size(10.0).color(tk.text_dim)),
@@ -1309,33 +1347,147 @@ fn canvas_menu(app: &mut MaterialCraftApp, ui: &mut Ui, at: Pos2) {
 mod tests {
     use super::*;
 
+    /// The whole app in an offscreen egui context, driven one frame at a time.
+    struct Frames {
+        ctx: egui::Context,
+        app: MaterialCraftApp,
+        time: f64,
+    }
+
+    impl Frames {
+        /// `session` after a few frames, so the canvas is laid out.
+        fn new(session: materialcraft_engine::Session) -> Frames {
+            let mut f = Frames { ctx: egui::Context::default(), app: MaterialCraftApp::headless(session, crate::UiState::default()), time: 0.0 };
+            for _ in 0..3 {
+                f.run(Vec::new(), egui::Modifiers::NONE);
+            }
+            f
+        }
+
+        /// One frame with `events` while `modifiers` are held, in a desktop-sized window (egui's
+        /// default screen is so large that the 3D view's frame would exceed the texture limit).
+        fn run(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+            self.time += 0.05;
+            let events = std::iter::once(egui::Event::ModifiersChanged(modifiers)).chain(events).collect();
+            let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 960.0)));
+            let input = egui::RawInput { events, screen_rect, time: Some(self.time), ..Default::default() };
+            let app = &mut self.app;
+            self.ctx
+                .run_ui(input, |ui| {
+                    app.step(&ui.ctx().clone());
+                    app.draw(ui);
+                })
+                .textures_delta
+                .clear();
+        }
+
+        /// Press and release the primary button at `pos`, a second after any earlier click so
+        /// the two never pair into a double-click.
+        fn click(&mut self, pos: Pos2, modifiers: egui::Modifiers) {
+            self.time += 1.0;
+            self.run(vec![egui::Event::PointerMoved(pos)], modifiers);
+            for pressed in [true, false] {
+                self.run(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers }], modifiers);
+            }
+        }
+
+        /// The center of node `id` on screen last frame.
+        fn center(&self, id: NodeId) -> Pos2 {
+            self.app.graph.rects.iter().find(|(n, _)| *n == id).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("node {id:?} is not on screen"))
+        }
+
+        /// The node the 2D view shows once the graph has cooked.
+        fn shown(&mut self) -> Option<NodeId> {
+            self.app.session.cook();
+            self.app.session.view2d_image().map(|(id, _)| id)
+        }
+    }
+
+    /// A graph with a Perlin noise, a checker and an RGBA split side by side, framed on screen.
+    fn three_nodes() -> (Frames, [NodeId; 3]) {
+        let mut s = materialcraft_engine::sample_session();
+        materialcraft_engine::execute(&mut s, "file.new", &json!({"template": "empty", "size": 256})).unwrap();
+        let ids = ["perlin_noise", "checker", "rgba_split"].iter().enumerate().map(|(i, def)| {
+            let added = materialcraft_engine::execute(&mut s, "graph.node.add", &json!({"def": def, "at": [i as f32 * 300.0, 0.0]})).unwrap();
+            NodeId(added["id"].as_u64().unwrap())
+        });
+        let ids: [NodeId; 3] = ids.collect::<Vec<_>>().try_into().unwrap();
+        s.selection.clear();
+        (Frames::new(s), ids)
+    }
+
+    #[test]
+    fn clicking_a_node_shows_it_in_the_2d_view() {
+        let (mut f, [noise, checker, _]) = three_nodes();
+        // Shown explicitly first (a double-click, an output port or "View in 2D view").
+        f.app.run("view.2d", json!({"node": noise.0}));
+        assert_eq!(f.shown(), Some(noise));
+        let at = f.center(checker);
+        f.click(at, egui::Modifiers::NONE);
+        assert_eq!(f.app.session.selection, vec![checker]);
+        assert_eq!(f.app.session.view2d.node, Some(checker));
+        assert_eq!(f.shown(), Some(checker));
+        // And back.
+        let at = f.center(noise);
+        f.click(at, egui::Modifiers::NONE);
+        assert_eq!(f.app.session.view2d.node, Some(noise));
+        assert_eq!(f.shown(), Some(noise));
+        // Ctrl+click adds a node to the selection and shows it too.
+        let at = f.center(checker);
+        f.click(at, egui::Modifiers::CTRL);
+        assert_eq!(f.app.session.selection, vec![noise, checker]);
+        assert_eq!(f.shown(), Some(checker));
+    }
+
+    #[test]
+    fn ctrl_click_that_deselects_a_node_does_not_show_it() {
+        let (mut f, [noise, checker, _]) = three_nodes();
+        f.app.session.selection = vec![noise, checker];
+        f.app.run("view.2d", json!({"node": checker.0}));
+        let at = f.center(noise);
+        f.click(at, egui::Modifiers::CTRL);
+        assert_eq!(f.app.session.selection, vec![checker]);
+        assert_eq!(f.shown(), Some(checker));
+    }
+
+    #[test]
+    fn dragging_a_node_keeps_the_2d_view() {
+        let (mut f, [noise, checker, _]) = three_nodes();
+        f.app.run("view.2d", json!({"node": noise.0}));
+        let before = f.app.session.graph().unwrap().node(checker).unwrap().pos;
+        let from = f.center(checker);
+        let none = egui::Modifiers::NONE;
+        f.run(vec![egui::Event::PointerMoved(from)], none);
+        f.run(vec![egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: none }], none);
+        for step in 1..=8 {
+            f.run(vec![egui::Event::PointerMoved(from + vec2(5.0 * step as f32, 0.0))], none);
+        }
+        let to = from + vec2(40.0, 0.0);
+        f.run(vec![egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: none }], none);
+        let after = f.app.session.graph().unwrap().node(checker).unwrap().pos;
+        let moved = 40.0 / f.app.ui.graph_camera.zoom;
+        assert!((after[0] - before[0] - moved).abs() < 1e-3 && after[1] == before[1], "the checker moved {before:?} -> {after:?}, not {moved} right");
+        assert_eq!(f.app.session.selection, vec![checker]);
+        assert_eq!(f.shown(), Some(noise));
+    }
+
+    #[test]
+    fn clicking_the_shown_node_keeps_its_port() {
+        let (mut f, [_, _, split]) = three_nodes();
+        f.app.run("view.2d", json!({"node": split.0, "port": 2}));
+        let at = f.center(split);
+        f.click(at, egui::Modifiers::NONE);
+        assert_eq!(f.app.session.selection, vec![split]);
+        assert_eq!((f.app.session.view2d.node, f.app.session.view2d.port), (Some(split), 2));
+    }
+
     #[test]
     fn tab_opens_search_in_the_full_workspace() {
-        let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::UiState::default());
-        let ctx = egui::Context::default();
-        for _ in 0..3 {
-            ctx.run_ui(egui::RawInput::default(), |ui| {
-                app.step(&ui.ctx().clone());
-                app.draw(ui);
-            })
-            .textures_delta
-            .clear();
-        }
-        let pointer = app.graph.view.center();
-        let input = egui::RawInput {
-            events: vec![
-                egui::Event::PointerMoved(pointer),
-                egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE },
-            ],
-            ..Default::default()
-        };
-        ctx.run_ui(input, |ui| {
-            app.step(&ui.ctx().clone());
-            app.draw(ui);
-        })
-        .textures_delta
-        .clear();
-        assert!(app.graph.search.is_some());
+        let mut f = Frames::new(materialcraft_engine::sample_session());
+        let pointer = f.app.graph.view.center();
+        let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        f.run(vec![egui::Event::PointerMoved(pointer), tab], egui::Modifiers::NONE);
+        assert!(f.app.graph.search.is_some());
     }
 
     #[test]
@@ -1385,6 +1537,56 @@ mod tests {
         frame(&mut app, vec![key(egui::Key::Delete)], egui::Modifiers::NONE);
         assert!(app.session.graph().unwrap().connections.is_empty());
         assert!(app.graph.selected_wires.is_empty());
+    }
+
+    #[test]
+    fn wires_connect_when_dragged_from_either_end() {
+        let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::UiState::default());
+        app.run("file.new", json!({"template": "empty"}));
+        let id = |v: Option<serde_json::Value>| v.and_then(|v| v["id"].as_u64()).unwrap();
+        let noise = id(app.run("graph.node.add", json!({"def": "perlin_noise", "at": [0, 0]})));
+        let blend = id(app.run("graph.node.add", json!({"def": "blend", "at": [450, 0]})));
+        let ctx = egui::Context::default();
+        let frame = |app: &mut MaterialCraftApp, events: Vec<egui::Event>| {
+            ctx.run_ui(egui::RawInput { events, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 960.0))), ..Default::default() }, |ui| {
+                app.step(&ui.ctx().clone());
+                app.draw(ui);
+            })
+            .textures_delta
+            .clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let port = |app: &MaterialCraftApp, node: u64, output: bool, name: &str| {
+            app.graph.ports.iter().find(|h| h.node.0 == node && h.output == output && h.port == name).map(|h| h.pos).unwrap()
+        };
+        let output = port(&app, noise, true, "output");
+        let foreground = port(&app, blend, false, "foreground");
+        let background = port(&app, blend, false, "background");
+        let empty = app.graph.view.left_top() + vec2(5.0, 5.0);
+        let drag = |app: &mut MaterialCraftApp, from: Pos2, to: Pos2| {
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(app, vec![egui::Event::PointerMoved(from)]);
+            frame(app, vec![button(from, true)]);
+            frame(app, vec![egui::Event::PointerMoved(to)]);
+            frame(app, vec![button(to, false)]);
+        };
+        let source = |app: &MaterialCraftApp| app.session.graph().unwrap().input_of(NodeId(blend), "foreground").map(|c| (c.from.0, c.from_port.clone()));
+
+        // From the input: only an output finishes the wire, and a miss changes nothing.
+        drag(&mut app, foreground, empty);
+        assert_eq!(source(&app), None);
+        assert!(app.graph.search.is_none());
+        drag(&mut app, foreground, background);
+        assert_eq!(source(&app), None);
+        drag(&mut app, foreground, output);
+        assert_eq!(source(&app), Some((noise, "output".to_string())));
+
+        // From the output, as before.
+        app.run("graph.disconnect", json!({"to": blend, "toPort": "foreground"}));
+        drag(&mut app, output, foreground);
+        assert_eq!(source(&app), Some((noise, "output".to_string())));
     }
 
     #[test]
@@ -1455,5 +1657,72 @@ mod tests {
             assert!(r.contains(p) || (p.x - r.left()).abs() < 1e-3);
             assert!(p.y > r.top() + HEADER_H && p.y < r.bottom() - FOOTER_H);
         }
+    }
+    fn search_harness(render: bool) -> egui_kittest::Harness<'static, MaterialCraftApp> {
+        let app = MaterialCraftApp::headless(materialcraft_engine::new_session(), crate::UiState::default());
+        let builder = egui_kittest::Harness::builder().with_size(vec2(1600.0, 960.0)).with_step_dt(1.0 / 60.0);
+        let builder = if render { builder.wgpu() } else { builder };
+        let mut h = builder.build_ui_state(
+            |ui, app: &mut MaterialCraftApp| {
+                app.step(&ui.ctx().clone());
+                app.draw(ui);
+            },
+            app,
+        );
+        h.run_steps(10);
+        let pointer = h.state().graph.view.center();
+        h.event(egui::Event::PointerMoved(pointer));
+        h.step();
+        h.key_press(egui::Key::Tab);
+        h.step();
+        assert!(h.state().graph.search.is_some());
+        h
+    }
+
+    fn select_result_after_cutoff(h: &mut egui_kittest::Harness<'static, MaterialCraftApp>) -> &'static str {
+        for _ in 0..60 {
+            h.key_press(egui::Key::ArrowDown);
+            h.step();
+        }
+        h.run_steps(3); // Let scroll_to_me bring the selected row into view.
+        let selected = h.state().graph.search.as_ref().unwrap().sel;
+        assert_eq!(selected, 60);
+        let def = matches("")[selected];
+        let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("node-search"))).unwrap();
+        fn visible(shape: &egui::epaint::Shape, clip: Rect, popup: Rect, label: &str) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(t) => popup.contains(t.pos) && clip.contains(t.pos) && t.galley.text().trim_start().starts_with(label),
+                egui::epaint::Shape::Vec(v) => v.iter().any(|s| visible(s, clip, popup, label)),
+                _ => false,
+            }
+        }
+        assert!(
+            h.output().shapes.iter().any(|s| visible(&s.shape, s.clip_rect, popup, def.label)),
+            "keyboard-selected result {selected} ({}) is not visible in the popup",
+            def.label
+        );
+        def.id
+    }
+
+    #[test]
+    fn keyboard_search_selection_after_sixty_results_is_visible_and_inserts() {
+        let mut h = search_harness(false);
+        let expected = select_result_after_cutoff(&mut h);
+        h.key_press(egui::Key::Enter);
+        h.step();
+        assert!(h.state().graph.search.is_none());
+        let graph = h.state().session.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].def, expected);
+    }
+
+    #[test]
+    #[ignore = "requires an offscreen GPU"]
+    fn search_result_after_sixty_screenshot() {
+        let mut h = search_harness(true);
+        select_result_after_cutoff(&mut h);
+        let dir = std::path::PathBuf::from(std::env::var_os("MC_SNAPSHOT_DIR").expect("set MC_SNAPSHOT_DIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(dir.join("search-result-61.png")).unwrap();
     }
 }
