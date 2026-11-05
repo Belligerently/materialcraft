@@ -289,6 +289,7 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
                 Ok(mut ui) => {
                     ui.graph_camera = ui.graph_camera.sanitized();
                     ui.image_camera = ui.image_camera.sanitized();
+                    ui.windows.unsaved = app.ui.windows.unsaved.clone();
                     app.ui = ui;
                     ok(Value::Null)
                 }
