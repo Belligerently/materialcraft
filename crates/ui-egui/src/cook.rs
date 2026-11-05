@@ -1,15 +1,41 @@
 //! Background cooking: when the open graph changes, a worker thread cooks a snapshot of the
 //! package through the shared cache while the UI keeps drawing the previous results.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use materialcraft_engine::eval::Cooked;
+use materialcraft_engine::eval::{Cooked, NodeResult};
 
 use crate::MaterialCraftApp;
 
+/// Run `f`, turning a panic into an error naming `what`, so one bad node or command can't take
+/// the app (and unsaved work) down.
+pub fn guard<T>(what: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|p| {
+        let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
+        Err(format!("internal error in {what}: {msg}"))
+    })
+}
+
+/// Run an engine command; a panic inside it becomes an error reply (the session is kept).
+pub fn execute_guarded(session: &mut materialcraft_engine::Session, id: &str, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+    guard(&format!("command `{id}`"), || materialcraft_engine::execute(session, id, params).map_err(|e| e.to_string()))
+}
+
+/// A cook that crashed or died: every node of the open graph shows the error instead of stale
+/// previews, and the user sees a toast.
+fn report_failure(app: &mut MaterialCraftApp, msg: String) {
+    let ids: Vec<_> = app.session.graph().map(|g| g.nodes.iter().map(|n| n.id).collect()).unwrap_or_default();
+    app.session.cooked = Cooked::default();
+    for id in ids {
+        app.session.cooked.nodes.insert(id, NodeResult { outputs: Default::default(), error: Some(msg.clone()), ms: 0.0, key: 0, cached: false });
+    }
+    app.toast(msg, true);
+}
+
 #[derive(Default)]
 pub struct Cooker {
-    rx: Option<Receiver<Cooked>>,
+    rx: Option<Receiver<Result<Cooked, String>>>,
     /// Stops the running cook between nodes once its result is stale.
     #[cfg(not(target_arch = "wasm32"))]
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -29,20 +55,23 @@ impl Cooker {
 pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if let Some(rx) = &app.cooker.rx {
         match rx.try_recv() {
-            Ok(c) => {
-                if c.cancelled {
-                    // A stopped cook is partial: keep the previous results and cook again.
-                    app.session.dirty = true;
-                } else if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
-                    // (A synchronous cook, e.g. `session.inspect`, since this one started is newer:
-                    // its results stand and this stale snapshot is dropped.)
-                    app.session.cooked = c;
-                }
+            Ok(result) => {
                 app.cooker.rx = None;
                 app.cooker.started = None;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     app.cooker.cancel = None;
+                }
+                match result {
+                    // A stopped cook is partial: keep the previous results and cook again.
+                    Ok(c) if c.cancelled => app.session.dirty = true,
+                    Ok(c) => {
+                        if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                            app.session.cooked = c;
+                        }
+                    }
+                    Err(msg) if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch => report_failure(app, msg),
+                    Err(_) => {}
                 }
                 ctx.request_repaint();
             }
@@ -63,6 +92,9 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             Err(TryRecvError::Disconnected) => {
                 app.cooker.rx = None;
                 app.cooker.started = None;
+                if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                    report_failure(app, "the cook worker stopped unexpectedly".into());
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     app.cooker.cancel = None;
@@ -93,7 +125,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
         let mut opts = Options::new(&dec);
         opts.max_size = max;
         opts.cancel = Some(&thread_flag);
-        let cooked = materialcraft_engine::eval::cook(&pkg, gi, &opts, &cache);
+        let cooked = guard("cook", || Ok(materialcraft_engine::eval::cook(&pkg, gi, &opts, &cache)));
         let _ = tx.send(cooked);
     });
     match spawned {
@@ -105,15 +137,25 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
         }
         Err(e) => {
             log::warn!("could not start a cook thread ({e}); cooking here");
-            app.session.cook();
+            cook_here(app);
         }
+    }
+}
+
+fn cook_here(app: &mut MaterialCraftApp) {
+    if let Err(msg) = guard("cook", || {
+        app.session.cook();
+        Ok(())
+    }) {
+        app.session.dirty = false;
+        report_failure(app, msg);
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn start(app: &mut MaterialCraftApp, _now: f64) {
     // shortcut: no threads on the web; the cook runs on the UI thread (the page pauses).
-    app.session.cook();
+    cook_here(app);
 }
 
 #[cfg(test)]
