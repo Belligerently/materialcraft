@@ -14,23 +14,23 @@ materialcraft-cli: headless MaterialCraft
 
 USAGE:
   materialcraft-cli --version
-  materialcraft-cli info <package.mcraft | sample>
+  materialcraft-cli info <package.sbs | package.mcraft | sample>
       Graphs, nodes, outputs and cook results, as JSON.
   materialcraft-cli commands [--filter <text>]
       List the engine commands (id, label, params).
   materialcraft-cli nodes [--filter <text>] [--category <text>]
       List the node library (ids, ports, parameters).
-  materialcraft-cli run <input> <command-id> [params-json] [-o <out.mcraft>]
+  materialcraft-cli run <input> <command-id> [params-json] [-o <out.sbs>]
       Run one command and print its JSON result; -o saves the package.
   materialcraft-cli batch <script.json>
-      Run [{\"id\", \"params\"}, ...] or {\"open\": <input>, \"steps\": [...], \"save\": <out.mcraft>}.
-  materialcraft-cli new <template> <out.mcraft> [--size <px>] [--name <name>]
+      Run [{\"id\", \"params\"}, ...] or {\"open\": <input>, \"steps\": [...], \"save\": <out.sbs>}.
+  materialcraft-cli new <template> <out.sbs> [--size <px>] [--name <name>]
       A new package with one graph from a template (empty, pbr, bricks, stone_tiles, wood,
       metal_plates, rusty_metal, lava, marble, wicker, fabric, ground).
   materialcraft-cli cook <input> [--graph <index>] [--set <input>=<value>]... [--full]
       Cook a graph and print per-node timings and errors.
   materialcraft-cli export <input> <dir> [--graph <index>] [--set <input>=<value>]... [--format <ext>]
-                   [--depth 8|16|32] [--pattern <p>]
+                   [--depth 8|16|32] [--size <px>] [--pattern <p>]
       Cook at full size and write every output (png, jpg, tga, tif, bmp, webp, exr, hdr).
   materialcraft-cli render <input> <out.png> [--size <W>x<H>] [--view 3d|2d] [--scene <id>] [--node <id>]
                    [--yaw <deg>] [--pitch <deg>] [--graph <index>] [--set <input>=<value>]... [--full]
@@ -44,7 +44,8 @@ USAGE:
   materialcraft-cli serve [--port <port>] [--read-root <dir>] [--write-root <dir>]
       JSON lines ({\"id\",\"method\",\"params\"}) on stdio, or on 127.0.0.1:<port> with a token.
 
-<input> is a .mcraft package or `sample` (the built-in brick wall). --set gives a graph input a value
+<input> is an .sbs or .mcraft package or `sample` (the built-in brick wall). Packages save as SBS
+unless the output path ends in .mcraft. --set gives a graph input a value
 (JSON, e.g. `--set roughness=0.4 --set tint=\"#aa7744\"`) before cooking. See docs/control-protocol.md.
 ";
 
@@ -57,7 +58,7 @@ const SUBCOMMANDS: &[(&str, &[&str], &[&str])] = &[
     ("batch", &[], &[]),
     ("new", &["--size", "--name"], &[]),
     ("cook", &["--graph", "--set"], &["--full"]),
-    ("export", &["--graph", "--set", "--format", "--depth", "--pattern"], &[]),
+    ("export", &["--graph", "--set", "--format", "--depth", "--size", "--pattern"], &[]),
     ("render", &["--size", "--view", "--scene", "--node", "--yaw", "--pitch", "--graph", "--set", "--tiling", "--displacement"], &["--full", "--hq"]),
     ("mcp", &["--bridge", "--token", "--read-root", "--write-root"], &[]),
     ("serve", &["--port", "--read-root", "--write-root"], &[]),
@@ -113,7 +114,7 @@ fn version() -> String {
     }
 }
 
-/// A headless session on `input` (a .mcraft package or `sample`), with local file access.
+/// A headless session on `input` (an .sbs or .mcraft package, or `sample`), with local file access.
 fn open(input: &str) -> Result<Headless, String> {
     let mut h = Headless::new(Headless::default_session(), Filesystem::TrustedLocal);
     if input != "sample" {
@@ -210,7 +211,7 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
         }
         "new" => {
             let tpl = a.pos(0, "<template>")?;
-            let out = a.pos(1, "<out.mcraft>")?;
+            let out = a.pos(1, "<out.sbs>")?;
             let mut h = Headless::new(Headless::default_session(), Filesystem::TrustedLocal);
             h.command_run("file.newPackage", json!({"name": a.get("--name").unwrap_or("Untitled package")})).map_err(|e| e.to_string())?;
             h.command_run("file.new", json!({"template": tpl, "size": a.num::<u64>("--size")?.unwrap_or(1024), "name": a.get("--name")}))
@@ -227,7 +228,7 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
             let mut h = open(a.pos(0, "<input>")?)?;
             select_graph(&mut h, a)?;
             let dir = a.pos(1, "<dir>")?;
-            let p = json!({"dir": dir, "graph": a.num::<u64>("--graph")?, "format": a.get("--format"), "depth": a.num::<u64>("--depth")?, "pattern": a.get("--pattern")});
+            let p = json!({"dir": dir, "graph": a.num::<u64>("--graph")?, "format": a.get("--format"), "depth": a.num::<u64>("--depth")?, "size": a.num::<u64>("--size")?, "pattern": a.get("--pattern")});
             print(&h.export(&p).map_err(|e| e.to_string())?);
         }
         "render" => {
@@ -274,14 +275,16 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
             let h = Arc::new(Mutex::new(Headless::new(Headless::default_session(), workspace(a)?)));
             match a.num::<u16>("--port")? {
                 Some(port) => {
-                    let (token, file) = server_token(port).map_err(|e| e.to_string())?;
-                    rpc::serve_tcp(port, h, token, |addr| {
-                        eprintln!("materialcraft-cli: serving JSON lines on {addr}");
-                        if let Some(f) = &file {
-                            eprintln!("materialcraft-cli: token in {}", f.display());
-                        }
-                    })
-                    .map_err(|e| e.to_string())?;
+                    // Bind first: a port in use must not replace its server's token file, and port 0's
+                    // token file is named after the port actually picked.
+                    let listener = rpc::bind_tcp(port).map_err(|e| e.to_string())?;
+                    let addr = listener.local_addr().map_err(|e| e.to_string())?;
+                    let (token, file) = server_token(addr.port()).map_err(|e| e.to_string())?;
+                    eprintln!("materialcraft-cli: serving JSON lines on {addr}");
+                    if let Some(f) = &file {
+                        eprintln!("materialcraft-cli: token in {}", f.display());
+                    }
+                    rpc::serve_listener(listener, h, token).map_err(|e| e.to_string())?;
                 }
                 None => rpc::serve_lines(&h, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| e.to_string())?,
             }
