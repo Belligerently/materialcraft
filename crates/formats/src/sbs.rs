@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use base64::Engine as _;
 use materialcraft_core::{
     BaseParams, Comment, Connection, ExposedParam, Frame, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, OutputFormat, Package, Resource,
-    SizeMode, Value, linear_to_srgb, missing_ports, srgb_to_linear,
+    ResourceBytes, SizeMode, Value, linear_to_srgb, missing_ports, srgb_to_linear,
 };
 use materialcraft_nodes::{PortKind, find};
 use roxmltree::Node as XmlNode;
@@ -775,11 +775,7 @@ impl<'text> Reader<'text, '_> {
         match bytes {
             Some(data) => {
                 let ext = if kind == "svg" { "svg".to_string() } else { format };
-                pkg.resources.push(Resource {
-                    name: name.clone(),
-                    file: crate::safe_file_name(&format!("{name}.{ext}")),
-                    bytes: materialcraft_core::ResourceBytes::new(data),
-                });
+                pkg.resources.push(Resource::new(name.clone(), crate::safe_file_name(&format!("{name}.{ext}")), ResourceBytes::new(data)));
             }
             None => {
                 let why = if why_missing.is_empty() { "it has no data".to_string() } else { why_missing };
@@ -1856,7 +1852,7 @@ mod tests {
 
         let orange = materialcraft_image::Image::filled(4, 4, materialcraft_image::Kind::Color, [1.0, 0.5, 0.0, 1.0]);
         let png = crate::encode(&orange, "png", crate::Depth::U8, true).unwrap();
-        pkg.resources.push(Resource { name: "tex".into(), file: "tex.png".into(), bytes: materialcraft_core::ResourceBytes::new(png) });
+        pkg.resources.push(Resource::new("tex", "tex.png", ResourceBytes::new(png)));
         pkg
     }
 
