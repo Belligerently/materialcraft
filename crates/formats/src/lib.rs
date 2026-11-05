@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::sync::Arc;
 
-use materialcraft_core::{OutputFormat, Package};
+use materialcraft_core::{OutputFormat, Package, ResourceBytes};
 use materialcraft_image::{Image, Kind, MAX_SIDE, linear_to_srgb, srgb_to_linear};
 
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +60,7 @@ pub fn save_package(pkg: &Package) -> Result<Vec<u8>> {
             // Images are already compressed.
             let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
             z.start_file(format!("resources/{}", safe_file_name(&r.file)), stored).map_err(io)?;
-            z.write_all(&r.bytes).map_err(|e| FormatError::Io(e.to_string()))?;
+            z.write_all(r.bytes.as_slice()).map_err(|e| FormatError::Io(e.to_string()))?;
         }
         z.finish().map_err(io)?;
     }
@@ -86,11 +86,11 @@ fn load_package_within(bytes: &[u8], max_total: u64) -> Result<Package> {
         return Err(FormatError::BadPackage(format!("{} resources (limit {MAX_RESOURCES})", pkg.resources.len())));
     }
     let mut total = json.len() as u64;
-    let mut read: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
+    let mut read: HashMap<String, ResourceBytes> = HashMap::new();
     for r in &mut pkg.resources {
         let name = format!("resources/{}", safe_file_name(&r.file));
         if let Some(shared) = read.get(&name) {
-            r.bytes = Arc::clone(shared);
+            r.bytes = shared.clone();
             continue;
         }
         let mut data = Vec::new();
@@ -101,8 +101,8 @@ fn load_package_within(bytes: &[u8], max_total: u64) -> Result<Package> {
         if total > max_total {
             return Err(FormatError::BadPackage(format!("package resources exceed {max_total} bytes")));
         }
-        let data = Arc::new(data);
-        read.insert(name, Arc::clone(&data));
+        let data = ResourceBytes::new(data);
+        read.insert(name, data.clone());
         r.bytes = data;
     }
     Ok(pkg)
@@ -285,12 +285,12 @@ mod tests {
         g.connect(a, "output", o, "input").unwrap();
         p.graphs.push(g);
         let png = encode(&Image::filled(4, 4, Kind::Color, [1.0, 0.5, 0.0, 1.0]), "png", Depth::U8, true).unwrap();
-        p.resources.push(Resource { name: "tex".into(), file: "../../evil/tex.png".into(), bytes: Arc::new(png) });
+        p.resources.push(Resource::new("tex", "../../evil/tex.png", ResourceBytes::new(png)));
         let bytes = save_package(&p).unwrap();
         let q = load_package(&bytes).unwrap();
         assert_eq!(q.graphs, p.graphs);
         assert_eq!(q.resources[0].bytes, p.resources[0].bytes);
-        let img = decode(&q.resources[0].bytes).unwrap();
+        let img = decode(q.resources[0].bytes.as_slice()).unwrap();
         assert!((img.get(0, 0, false)[1] - 0.5).abs() < 0.01);
         assert!(load_package(b"not a zip").is_err());
     }
@@ -349,7 +349,7 @@ mod tests {
         let pkg = load_package(&bytes).unwrap();
         assert_eq!(pkg.resources.len(), 1000);
         assert_eq!(pkg.resources[0].bytes.len(), 1 << 20);
-        assert!(Arc::ptr_eq(&pkg.resources[0].bytes, &pkg.resources[999].bytes));
+        assert!(pkg.resources[0].bytes.ptr_eq(&pkg.resources[999].bytes));
     }
 
     #[test]

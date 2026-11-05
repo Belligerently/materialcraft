@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -184,11 +184,13 @@ pub struct Options<'a> {
     /// Set from another thread to stop between nodes.
     pub cancel: Option<&'a AtomicBool>,
     pub depth: u32,
+    /// Graphs being cooked around this one, outermost first (cycle detection).
+    pub graph_stack: Vec<usize>,
 }
 
 impl<'a> Options<'a> {
     pub fn new(resource: &'a (dyn Fn(&str) -> Option<Image> + Sync)) -> Options<'a> {
-        Options { max_size: None, only: None, inputs: BTreeMap::new(), overrides: BTreeMap::new(), resource, cancel: None, depth: 0 }
+        Options { max_size: None, only: None, inputs: BTreeMap::new(), overrides: BTreeMap::new(), resource, cancel: None, depth: 0, graph_stack: Vec::new() }
     }
 }
 
@@ -267,7 +269,7 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
     let opts = if opts.depth == 0 && !graph.input_images.is_empty() {
         let mut inputs: BTreeMap<String, Image> = graph.input_images.iter().filter_map(|(id, res)| Some((id.clone(), (opts.resource)(res)?))).collect();
         inputs.extend(opts.inputs.iter().map(|(k, v)| (k.clone(), v.clone())));
-        bound = Options { only: opts.only.clone(), inputs, overrides: opts.overrides.clone(), ..*opts };
+        bound = Options { only: opts.only.clone(), inputs, overrides: opts.overrides.clone(), graph_stack: opts.graph_stack.clone(), ..*opts };
         &bound
     } else {
         opts
@@ -294,14 +296,50 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &mut Cache) -> Cook
             break;
         }
         let Ok(node) = graph.node(id) else { continue };
-        let r = cook_node(pkg, graph, node, &out, &vars, opts, cache);
+        let r = cook_node(pkg, gi, graph, node, &out, &vars, opts, cache);
         out.nodes.insert(id, r);
     }
     out.ms = (now_ms() - t0) as f32;
     out
 }
 
-fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BTreeMap<String, Value>, opts: &Options, cache: &mut Cache) -> NodeResult {
+/// Hash each reachable graph and its resource content once. An iterative walk keeps
+/// deep chains and graphs with many shared instances bounded by the package size.
+fn graph_tree_hash(pkg: &Package, gi: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    let mut pending = vec![gi];
+    let mut seen = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        let Some(graph) = pkg.graphs.get(index) else { continue };
+        index.hash(&mut h);
+        serde_json::to_string(graph).unwrap_or_default().hash(&mut h);
+        for n in &graph.nodes {
+            if let Some(Value::Text(name)) = n.params.get("resource") {
+                pkg.resource(name).map(|r| r.bytes.content_hash()).hash(&mut h);
+            }
+            if n.def == "graph_instance"
+                && let Some((si, _)) = instance_graph(pkg, n)
+            {
+                pending.push(si);
+            }
+        }
+    }
+    h.finish()
+}
+
+fn cook_node(
+    pkg: &Package,
+    gi: usize,
+    graph: &Graph,
+    node: &Node,
+    done: &Cooked,
+    vars: &BTreeMap<String, Value>,
+    opts: &Options,
+    cache: &mut Cache,
+) -> NodeResult {
     let (in_ports, out_ports) = ports(pkg, node);
     let def = find(&node.def);
     // Gather inputs by port order, with their keys.
@@ -362,11 +400,10 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
     // Input nodes read the caller's image for their identifier.
     let input_img = node.def.starts_with("input_").then(|| opts.inputs.get(&identifier(node))).flatten();
     let res_hash = match params.get("resource") {
-        Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| hash_of(&(r.bytes.len(), r.bytes.get(..64.min(r.bytes.len())).map(|b| b.to_vec())))),
+        Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| r.bytes.content_hash()),
         _ => 0,
     };
-    let sub_hash =
-        if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(_, g)| hash_of(&serde_json::to_string(g).unwrap_or_default())) } else { 0 };
+    let sub_hash = if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(si, _)| graph_tree_hash(pkg, si)) } else { 0 };
     let key = hash_of(&(
         &node.def,
         serde_json::to_string(&params).unwrap_or_default(),
@@ -390,7 +427,7 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
         let name = if node.label.is_empty() { "this node" } else { node.label.as_str() };
         Err(format!("`{name}` is not in MaterialCraft's library yet: kept as a placeholder from the SBS file"))
     } else if node.def == "graph_instance" {
-        cook_instance(pkg, node, &in_ports, &out_ports, &inputs, &params, (w, h), opts, cache)
+        cook_instance(pkg, gi, node, &in_ports, &out_ports, &inputs, &params, (w, h), opts, cache)
     } else if let Some(d) = def {
         let ctx = Ctx { w, h, seed, tile, inputs: &inputs, params: &params, resource: opts.resource, vars };
         (d.cook)(&ctx)
@@ -408,8 +445,28 @@ fn cook_node(pkg: &Package, graph: &Graph, node: &Node, done: &Cooked, vars: &BT
     }
 }
 
+/// Whether graph `from` reaches `target`, without recursive stack growth.
+fn instances_reach(pkg: &Package, from: usize, target: usize) -> bool {
+    let mut pending = vec![from];
+    let mut seen = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) {
+            continue;
+        }
+        let Some(graph) = pkg.graphs.get(index) else { continue };
+        for (si, _) in graph.nodes.iter().filter(|n| n.def == "graph_instance").filter_map(|n| instance_graph(pkg, n)) {
+            if si == target {
+                return true;
+            }
+            pending.push(si);
+        }
+    }
+    false
+}
+
 fn cook_instance(
     pkg: &Package,
+    gi: usize,
     node: &Node,
     in_ports: &[Port],
     out_ports: &[Port],
@@ -422,14 +479,19 @@ fn cook_instance(
     if opts.depth >= MAX_DEPTH {
         return Err("graph instances nest too deep (does a graph use itself?)".into());
     }
-    let (gi, sub) = instance_graph(pkg, node).ok_or("the instanced graph does not exist")?;
+    let (sub_gi, sub) = instance_graph(pkg, node).ok_or("the instanced graph does not exist")?;
+    if sub_gi == gi || opts.graph_stack.contains(&sub_gi) || instances_reach(pkg, sub_gi, gi) {
+        return Err(format!("graph `{}` uses itself through a graph instance", sub.name));
+    }
     let mut o = Options::new(opts.resource);
     o.max_size = opts.max_size;
     o.cancel = opts.cancel;
     o.depth = opts.depth + 1;
+    o.graph_stack = opts.graph_stack.clone();
+    o.graph_stack.push(gi);
     o.inputs = in_ports.iter().zip(inputs).filter_map(|(p, i)| Some((p.id.clone(), i.clone()?))).collect();
     o.overrides = params.iter().filter(|(k, _)| sub.exposed.iter().any(|e| &e.id == *k)).map(|(k, v)| (k.clone(), v.clone())).collect();
-    let cooked = cook(pkg, gi, &o, cache);
+    let cooked = cook(pkg, sub_gi, &o, cache);
     if cooked.cancelled {
         return Err("cancelled".into());
     }
@@ -561,7 +623,109 @@ mod tests {
         let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
         let img = c.image(inst, 0).unwrap();
         assert!((img.data[0] - (1.0 - 0.0722 * 0.25 - 0.2126 * 0.25 - 0.7152 * 0.25)).abs() < 1e-4, "{}", img.data[0]);
-        assert!(c.nodes[&selfi].error.is_some() || c.nodes[&selfi].outputs.len() == 1);
+        assert!(c.nodes[&selfi].error.as_deref().is_some_and(|e| e.contains("uses itself")), "{:?}", c.nodes[&selfi].error);
+    }
+
+    /// A graph `name` holding one instance of `target` wired to an output.
+    fn instancing(name: &str, target: &str) -> (Graph, NodeId) {
+        let mut g = Graph::new(name);
+        g.size = [4, 4];
+        let inst = g.add_node("graph_instance", [0.0, 0.0]);
+        g.node_mut(inst).unwrap().params.insert("graph".into(), Value::Text(target.into()));
+        let o = g.add_node("output", [100.0, 0.0]);
+        g.connect(inst, "output", o, "input").unwrap();
+        (g, inst)
+    }
+
+    #[test]
+    fn editing_a_nested_graph_recooks_the_top() {
+        let mut c = Graph::new("c");
+        c.size = [4, 4];
+        let u = c.add_node("uniform", [0.0, 0.0]);
+        c.node_mut(u).unwrap().params.insert("mode".into(), Value::Enum(1));
+        c.node_mut(u).unwrap().params.insert("color".into(), Value::Color([0.2, 0.2, 0.2, 1.0]));
+        let o = c.add_node("output", [100.0, 0.0]);
+        c.connect(u, "output", o, "input").unwrap();
+        let (b, _) = instancing("b", "c");
+        let (a, top) = instancing("a", "b");
+        let mut p = Package::new("p");
+        p.graphs = vec![a, b, c];
+        let mut cache = Cache::default();
+        let opts = Options::new(&no_res);
+        let first = cook(&p, 0, &opts, &mut cache);
+        let out_a = p.graphs[0].nodes.iter().find(|n| n.def == "output").unwrap().id;
+        assert!((first.image(out_a, 0).unwrap().mean()[0] - 0.2).abs() < 0.01);
+        p.graphs[2].node_mut(u).unwrap().params.insert("color".into(), Value::Color([0.8, 0.8, 0.8, 1.0]));
+        let second = cook(&p, 0, &opts, &mut cache);
+        assert!(!second.nodes[&top].cached);
+        assert!((second.image(out_a, 0).unwrap().mean()[0] - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn deep_shared_instance_walks_stay_bounded() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let mut pkg = Package::new("deep");
+                for index in 0..2000 {
+                    let mut graph = Graph::new(&format!("g{index}"));
+                    // Repeated references must visit the next graph only once.
+                    for _ in 0..4 {
+                        let id = graph.add_node("graph_instance", [0.0; 2]);
+                        graph.node_mut(id).unwrap().params.insert("graph".into(), Value::Text(format!("g{}", index + 1)));
+                    }
+                    pkg.graphs.push(graph);
+                }
+                assert!(instances_reach(&pkg, 0, 1999));
+                assert!(!instances_reach(&pkg, 0, 2000));
+                let before = graph_tree_hash(&pkg, 0);
+                pkg.graphs[1999].seed = 42;
+                assert_ne!(before, graph_tree_hash(&pkg, 0));
+                // A back edge must terminate both traversals too.
+                pkg.graphs[1999].nodes[0].params.insert("graph".into(), Value::Text("g0".into()));
+                assert!(instances_reach(&pkg, 1, 0));
+                assert!(!instances_reach(&pkg, 0, 2000));
+                assert_ne!(before, graph_tree_hash(&pkg, 0));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn mutual_instances_are_an_error() {
+        let (x, xi) = instancing("x", "y");
+        let (y, _) = instancing("y", "x");
+        let mut p = Package::new("p");
+        p.graphs = vec![x, y];
+        let mut cache = Cache::default();
+        let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
+        assert!(c.nodes[&xi].error.as_deref().is_some_and(|e| e.contains("uses itself")), "{:?}", c.nodes[&xi].error);
+    }
+
+    #[test]
+    fn same_size_resources_key_differently() {
+        use materialcraft_core::{Resource, ResourceBytes};
+        use std::sync::atomic::AtomicU8;
+        let mut g = Graph::new("g");
+        g.size = [4, 4];
+        let bm = g.add_node("bitmap", [0.0, 0.0]);
+        g.node_mut(bm).unwrap().params.insert("resource".into(), Value::Text("tex".into()));
+        let mut p = Package::new("p");
+        p.graphs.push(g);
+        p.resources.push(Resource::new("tex", "tex.bin", ResourceBytes::new(vec![1; 100])));
+        // Stands in for decoding: the first byte picks the shade.
+        let shade = AtomicU8::new(1);
+        let res = |_: &str| Some(Image::filled(4, 4, Kind::Gray, [f32::from(shade.load(Ordering::Relaxed)) / 10.0; 4]));
+        let mut cache = Cache::default();
+        let opts = Options::new(&res);
+        let first = cook(&p, 0, &opts, &mut cache);
+        let mean = first.image(bm, 0).unwrap().mean()[0];
+        p.resources[0].bytes = ResourceBytes::new(vec![2; 100]);
+        shade.store(2, Ordering::Relaxed);
+        let second = cook(&p, 0, &opts, &mut cache);
+        assert!(!second.nodes[&bm].cached);
+        assert!((second.image(bm, 0).unwrap().mean()[0] - mean).abs() > 0.05);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 
 use serde_json::{Value as J, json};
 
-use materialcraft_core::{Package, Resource};
+use materialcraft_core::{Package, Resource, ResourceBytes};
 use materialcraft_formats::{Depth, encode, output_name};
 
 use crate::commands::{CommandSpec, always, bad, has_graph, strp, u64p};
@@ -95,6 +95,7 @@ fn new_package(s: &mut Session, p: &J) -> Result<J> {
 /// Make `pkg` the session's document (after open/new): history and views reset.
 pub fn replace_package(s: &mut Session, pkg: Package, path: Option<String>) {
     s.pkg = pkg;
+    s.clear_decoded();
     s.path = path;
     s.graph = 0;
     s.selection.clear();
@@ -355,7 +356,7 @@ pub(crate) fn push_resource(pkg: &mut Package, file: &str, bytes: Vec<u8>, name:
         name = format!("{stem}_{i}");
         i += 1;
     }
-    pkg.resources.push(Resource { name: name.clone(), file: format!("{name}_{file}"), bytes: std::sync::Arc::new(bytes) });
+    pkg.resources.push(Resource::new(name.clone(), format!("{name}_{file}"), ResourceBytes::new(bytes)));
     name
 }
 
