@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use materialcraft_core::{Graph, Node, NodeId, Package, SizeMode, Value};
 use materialcraft_image::{Image, Kind};
@@ -108,12 +108,15 @@ impl Cooked {
     }
 }
 
+type InputFingerprint = (Weak<Vec<f32>>, (u32, u32, usize), u64);
+
 /// LRU cache of node outputs, bounded by bytes.
 pub struct Cache {
     entries: HashMap<u64, (Arc<Vec<Image>>, usize, u64)>,
     bytes: usize,
     cap: usize,
     tick: u64,
+    input_hashes: HashMap<usize, InputFingerprint>,
 }
 
 impl Default for Cache {
@@ -124,7 +127,7 @@ impl Default for Cache {
 
 impl Cache {
     pub fn new(cap_bytes: usize) -> Cache {
-        Cache { entries: HashMap::new(), bytes: 0, cap: cap_bytes, tick: 0 }
+        Cache { entries: HashMap::new(), bytes: 0, cap: cap_bytes, tick: 0, input_hashes: HashMap::new() }
     }
 
     pub fn bytes(&self) -> usize {
@@ -141,6 +144,7 @@ impl Cache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.input_hashes.clear();
         self.bytes = 0;
     }
 
@@ -199,14 +203,33 @@ pub fn error_image(w: u32, h: u32) -> Image {
     Image::filled(w, h, Kind::Color, [1.0, 0.0, 1.0, 1.0])
 }
 
-/// Fingerprint the complete input, including its shape and channel count.
-fn image_key(i: &Image) -> u64 {
+/// Fingerprint all input values. Reuse the fingerprint while the immutable backing buffer
+/// remains alive; Weak guards against allocator address reuse and Arc copy-on-write mutations.
+fn image_key(i: &Image, cache: &Mutex<Cache>) -> u64 {
+    let ptr = Arc::as_ptr(&i.data) as usize;
+    let shape = (i.w, i.h, i.kind.channels());
+    if let Some(key) = lock(cache)
+        .input_hashes
+        .get(&ptr)
+        .and_then(|(weak, saved_shape, key)| weak.upgrade().filter(|data| Arc::ptr_eq(data, &i.data) && *saved_shape == shape).map(|_| *key))
+    {
+        return key;
+    }
     let mut h = DefaultHasher::new();
-    (i.w, i.h, i.kind.channels(), i.data.len()).hash(&mut h);
+    (shape, i.data.len()).hash(&mut h);
     for value in i.data.iter() {
         value.to_bits().hash(&mut h);
     }
-    h.finish()
+    let key = h.finish();
+    let mut cache = lock(cache);
+    if cache.input_hashes.len() >= 128 {
+        cache.input_hashes.retain(|_, (weak, _, _)| weak.strong_count() > 0);
+        if cache.input_hashes.len() >= 128 {
+            cache.input_hashes.clear();
+        }
+    }
+    cache.input_hashes.insert(ptr, (Arc::downgrade(&i.data), shape, key));
+    key
 }
 
 fn hash_of(v: &impl Hash) -> u64 {
@@ -451,7 +474,7 @@ fn cook_node(
         &in_keys,
         res_hash,
         sub_hash,
-        input_img.map(image_key),
+        input_img.map(|image| image_key(image, cache)),
         serde_json::to_string(&vars_read(&params, vars)).unwrap_or_default(),
     ));
     if let Some(v) = lock(cache).get(key) {
@@ -643,7 +666,24 @@ mod tests {
         let a = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
         let mut b = a.clone();
         Arc::make_mut(&mut b.data)[1] = 1.0;
-        assert_ne!(image_key(&a), image_key(&b));
+        let cache = Mutex::new(Cache::default());
+        assert_ne!(image_key(&a, &cache), image_key(&b, &cache));
+    }
+
+    #[test]
+    fn cached_input_fingerprint_tracks_copy_on_write_and_shape() {
+        let cache = Mutex::new(Cache::default());
+        let mut image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+        let first = image_key(&image, &cache);
+        assert_eq!(image_key(&image, &cache), first);
+        Arc::make_mut(&mut image.data)[1] = 1.0;
+        let changed = image_key(&image, &cache);
+        assert_ne!(changed, first);
+        image.w = 64;
+        image.h = 256;
+        assert_ne!(image_key(&image, &cache), changed);
+        lock(&cache).clear();
+        assert_eq!(image_key(&image, &cache), image_key(&image, &cache));
     }
 
     #[test]
