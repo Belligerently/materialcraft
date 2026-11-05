@@ -36,6 +36,8 @@ pub struct View3d {
     pub height_scale: f32,
     /// The height (0..1) that stays on the surface: 0 = the relief rises out of the mesh, 0.5 = centered on it.
     pub height_level: f32,
+    /// Flip green when reading DirectX normal maps; false matches the Normal node's OpenGL default.
+    pub normal_y_flip: bool,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -59,6 +61,7 @@ impl Default for View3d {
             exposure: 0.0,
             height_scale: 0.04,
             height_level: 0.0,
+            normal_y_flip: false,
             show_axis: false,
             show_grid: false,
             transparency: true,

@@ -279,6 +279,7 @@ impl Headless {
             tiling,
             exposure: v.exposure,
             env_rotation: v.env_rotation,
+            normal_y_flip: v.normal_y_flip,
             show_env: false,
             supersample: 2,
             transparency: v.transparency,
