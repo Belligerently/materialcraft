@@ -222,7 +222,8 @@ fn smoothstep_node(ctx: &Ctx) -> CookResult {
 }
 
 fn s_curve(ctx: &Ctx) -> CookResult {
-    let (k, p) = (1.0 + ctx.f("amount") * 4.0, ctx.f("pivot").clamp(0.01, 0.99));
+    // A negative k on a zero base gives inf; clamp it (k = 0 gives the finite 1).
+    let (k, p) = ((1.0 + ctx.f("amount") * 4.0).max(0.0), ctx.f("pivot").clamp(0.01, 0.99));
     per_channel(ctx, |v, _| {
         let v = v.clamp(0.0, 1.0);
         if v < p { p * (v / p).powf(k) } else { 1.0 - (1.0 - p) * ((1.0 - v) / (1.0 - p)).powf(k) }
