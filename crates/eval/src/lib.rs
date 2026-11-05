@@ -414,7 +414,7 @@ fn cook_node(
             Err(e) => return fail(format!("function of `{param}`: {e}"), 0),
         }
     }
-    // Hard limits on whatever files, bindings and functions supplied (a value can't hang a cook).
+    // Hard limits also apply after bindings and dynamic functions.
     if let Some(d) = def
         && node.def != "graph_instance"
     {
@@ -832,5 +832,29 @@ mod tests {
             assert!(second.nodes[&id].cached, "node {} does not read `a`", id.0);
         }
         assert!(!second.nodes[&reader].cached, "the reader must re-cook");
+    }
+
+    /// Bound exposed values obey hard safety limits while manual values beyond the slider remain valid.
+    #[test]
+    fn bound_values_are_clamped_to_hard_limits() {
+        let mut g = Graph::new("g");
+        g.size = [4, 4];
+        let white = g.add_node("uniform", [0.0, 0.0]);
+        g.node_mut(white).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(white).unwrap().params.insert("color".into(), Value::Color([1.0, 1.0, 1.0, 1.0]));
+        let black = g.add_node("uniform", [0.0, 100.0]);
+        g.node_mut(black).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(black).unwrap().params.insert("color".into(), Value::Color([0.0, 0.0, 0.0, 1.0]));
+        let blend = g.add_node("blend", [100.0, 0.0]);
+        g.connect(white, "output", blend, "foreground").unwrap();
+        g.connect(black, "output", blend, "background").unwrap();
+        g.node_mut(blend).unwrap().bindings.insert("opacity".into(), "o".into());
+        let mut p = Package::new("p");
+        p.graphs.push(g);
+        let mut opts = Options::new(&no_res);
+        opts.overrides.insert("o".into(), Value::Float(1e30));
+        let c = cook(&p, 0, &opts, &Mutex::new(Cache::default()));
+        let v = c.image(blend, 0).unwrap().data[0];
+        assert!((v - 17.0).abs() < 1e-4, "blend value {v}");
     }
 }
