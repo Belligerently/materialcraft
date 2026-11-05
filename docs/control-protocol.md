@@ -11,7 +11,15 @@ Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 3. **The app's control channel** (`materialcraft --control <port>`): one JSON request per line,
    `{"id", "method", "params"}` → `{"id", "ok": true, "result"}` or `{"id", "ok": false, "error"}`.
    The first request must be `{"method":"auth","params":{"token":"…"}}` with the token from
-   `MATERIALCRAFT_CONTROL_TOKEN` or the file `<temp>/materialcraft-control-<port>.token`.
+   `MATERIALCRAFT_CONTROL_TOKEN` (16 to 1024 printable ASCII characters) or the file
+   `<temp>/materialcraft-control-<port>.token`, a fresh random 256-bit token written after the port
+   is bound. On Unix the file is created new with mode 0600 (owner only); if an existing file there
+   cannot be replaced, the control server stays off and `MATERIALCRAFT_CONTROL_TOKEN` is the
+   alternative. Clients (`materialcraft-cli mcp --bridge`) refuse a token file that is a symlink,
+   not a regular file, not owned by them, or accessible to group or others. A connection gets one
+   authentication attempt, within 10 s; a wrong token, any other first request or malformed JSON
+   closes it. At most 16 connections are served at once. Whoever holds the token has full
+   engine-command authority, including host file access.
    Set `MATERIALCRAFT_NO_PREFS=1` for scripted runs so the user's layout is left alone.
 
 ## Methods

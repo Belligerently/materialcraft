@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -309,31 +309,28 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &Mutex<Cache>) -> C
     out
 }
 
-/// A hash of graph `gi` and everything it reaches: its own JSON, the content of every
-/// resource its nodes name, and (recursively) every graph it instances. A cycle hashes as a
-/// marker; `cook_instance` reports it as an error.
-fn graph_tree_hash(pkg: &Package, gi: usize, stack: &mut Vec<usize>) -> u64 {
-    let Some(graph) = pkg.graphs.get(gi) else { return 0 };
-    if stack.len() > MAX_DEPTH as usize {
-        return 1;
-    }
+/// Hash each reachable graph and its resource content once. An iterative walk keeps
+/// deep chains and graphs with many shared instances bounded by the package size.
+fn graph_tree_hash(pkg: &Package, gi: usize) -> u64 {
     let mut h = DefaultHasher::new();
-    serde_json::to_string(graph).unwrap_or_default().hash(&mut h);
-    for n in &graph.nodes {
-        if let Some(Value::Text(name)) = n.params.get("resource") {
-            pkg.resource(name).map(|r| r.bytes.content_hash()).hash(&mut h);
-        }
-        if n.def != "graph_instance" {
+    let mut pending = vec![gi];
+    let mut seen = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) {
             continue;
         }
-        match instance_graph(pkg, n) {
-            Some((si, _)) if stack.contains(&si) => "cycle".hash(&mut h),
-            Some((si, _)) => {
-                stack.push(si);
-                graph_tree_hash(pkg, si, stack).hash(&mut h);
-                stack.pop();
+        let Some(graph) = pkg.graphs.get(index) else { continue };
+        index.hash(&mut h);
+        serde_json::to_string(graph).unwrap_or_default().hash(&mut h);
+        for n in &graph.nodes {
+            if let Some(Value::Text(name)) = n.params.get("resource") {
+                pkg.resource(name).map(|r| r.bytes.content_hash()).hash(&mut h);
             }
-            None => 0u64.hash(&mut h),
+            if n.def == "graph_instance"
+                && let Some((si, _)) = instance_graph(pkg, n)
+            {
+                pending.push(si);
+            }
         }
     }
     h.finish()
@@ -430,7 +427,7 @@ fn cook_node(
         Some(Value::Text(name)) => pkg.resource(name).map_or(0, |r| r.bytes.content_hash()),
         _ => 0,
     };
-    let sub_hash = if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(si, _)| graph_tree_hash(pkg, si, &mut vec![si])) } else { 0 };
+    let sub_hash = if node.def == "graph_instance" { instance_graph(pkg, node).map_or(0, |(si, _)| graph_tree_hash(pkg, si)) } else { 0 };
     let key = hash_of(&(
         &node.def,
         serde_json::to_string(&params).unwrap_or_default(),
@@ -472,20 +469,23 @@ fn cook_node(
     }
 }
 
-/// Whether graph `from` instances graph `target`, directly or through other instanced graphs.
-/// `seen` holds the graphs already visited.
-fn instances_reach(pkg: &Package, from: usize, target: usize, seen: &mut Vec<usize>) -> bool {
-    let Some(graph) = pkg.graphs.get(from) else { return false };
-    graph.nodes.iter().filter(|n| n.def == "graph_instance").filter_map(|n| instance_graph(pkg, n)).any(|(si, _)| {
-        if si == target {
-            return true;
+/// Whether graph `from` reaches `target`, without recursive stack growth.
+fn instances_reach(pkg: &Package, from: usize, target: usize) -> bool {
+    let mut pending = vec![from];
+    let mut seen = HashSet::new();
+    while let Some(index) = pending.pop() {
+        if !seen.insert(index) {
+            continue;
         }
-        if seen.contains(&si) {
-            return false;
+        let Some(graph) = pkg.graphs.get(index) else { continue };
+        for (si, _) in graph.nodes.iter().filter(|n| n.def == "graph_instance").filter_map(|n| instance_graph(pkg, n)) {
+            if si == target {
+                return true;
+            }
+            pending.push(si);
         }
-        seen.push(si);
-        instances_reach(pkg, si, target, seen)
-    })
+    }
+    false
 }
 
 fn cook_instance(
@@ -504,7 +504,7 @@ fn cook_instance(
         return Err("graph instances nest too deep (does a graph use itself?)".into());
     }
     let (sub_gi, sub) = instance_graph(pkg, node).ok_or("the instanced graph does not exist")?;
-    if sub_gi == gi || opts.graph_stack.contains(&sub_gi) || instances_reach(pkg, sub_gi, gi, &mut vec![sub_gi]) {
+    if sub_gi == gi || opts.graph_stack.contains(&sub_gi) || instances_reach(pkg, sub_gi, gi) {
         return Err(format!("graph `{}` uses itself through a graph instance", sub.name));
     }
     let mut o = Options::new(opts.resource);
@@ -683,6 +683,37 @@ mod tests {
         let second = cook(&p, 0, &opts, &cache);
         assert!(!second.nodes[&top].cached);
         assert!((second.image(out_a, 0).unwrap().mean()[0] - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn deep_shared_instance_walks_stay_bounded() {
+        std::thread::Builder::new()
+            .stack_size(128 * 1024)
+            .spawn(|| {
+                let mut pkg = Package::new("deep");
+                for index in 0..2000 {
+                    let mut graph = Graph::new(&format!("g{index}"));
+                    // Repeated references must visit the next graph only once.
+                    for _ in 0..4 {
+                        let id = graph.add_node("graph_instance", [0.0; 2]);
+                        graph.node_mut(id).unwrap().params.insert("graph".into(), Value::Text(format!("g{}", index + 1)));
+                    }
+                    pkg.graphs.push(graph);
+                }
+                assert!(instances_reach(&pkg, 0, 1999));
+                assert!(!instances_reach(&pkg, 0, 2000));
+                let before = graph_tree_hash(&pkg, 0);
+                pkg.graphs[1999].seed = 42;
+                assert_ne!(before, graph_tree_hash(&pkg, 0));
+                // A back edge must terminate both traversals too.
+                pkg.graphs[1999].nodes[0].params.insert("graph".into(), Value::Text("g0".into()));
+                assert!(instances_reach(&pkg, 1, 0));
+                assert!(!instances_reach(&pkg, 0, 2000));
+                assert_ne!(before, graph_tree_hash(&pkg, 0));
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
