@@ -11,6 +11,8 @@ use crate::theme::{Accent, Brightness};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Prefs {
+    /// UI language code (`i18n::LANGUAGES`).
+    pub language: String,
     pub brightness: Brightness,
     pub accent: Accent,
     pub ui_scale: f32,
@@ -31,6 +33,7 @@ pub struct Prefs {
 impl Default for Prefs {
     fn default() -> Self {
         Prefs {
+            language: crate::i18n::os_language().into(),
             brightness: Brightness::default(),
             accent: Accent::default(),
             ui_scale: 1.0,
@@ -105,6 +108,8 @@ pub struct UiState {
     pub export_dir: String,
     pub export_format: String,
     pub export_depth: u32,
+    /// Export size in pixels; 0 = the graph's own size.
+    pub export_size: u32,
     pub export_pattern: String,
     /// Frame the whole graph on the next frame.
     #[serde(skip)]
@@ -128,6 +133,7 @@ impl Default for UiState {
             export_dir: String::new(),
             export_format: "png".into(),
             export_depth: 0,
+            export_size: 0,
             export_pattern: "$(graph)_$(identifier)".into(),
             frame_all: true,
         }

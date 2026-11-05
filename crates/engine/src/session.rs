@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use materialcraft_core::{Graph, NodeId, Package};
+use materialcraft_core::{Graph, NodeId, Package, ResourceBytes};
 use materialcraft_eval::{Cache, Cooked, Options};
 use materialcraft_image::Image;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,11 @@ pub struct View3d {
     pub height_scale: f32,
     pub show_axis: bool,
     pub show_grid: bool,
+    /// See through the mesh where the material's alpha (opacity output, else base color alpha)
+    /// is below one.
+    pub transparency: bool,
+    /// Show the material's alpha channel on the mesh instead of the lit material.
+    pub alpha_view: bool,
 }
 
 impl Default for View3d {
@@ -53,6 +58,8 @@ impl Default for View3d {
             height_scale: 0.012,
             show_axis: false,
             show_grid: false,
+            transparency: true,
+            alpha_view: false,
         }
     }
 }
@@ -118,6 +125,9 @@ pub struct Clip {
     pub connections: Vec<materialcraft_core::Connection>,
 }
 
+/// The prefix of warning lines in [`Session::log`].
+pub const WARNING_PREFIX: &str = "Warning: ";
+
 pub struct Session {
     pub pkg: Package,
     /// Where the package was opened from or last saved to.
@@ -133,6 +143,8 @@ pub struct Session {
     pub camera: CameraPrefs,
     pub modified: bool,
     pub log: Vec<String>,
+    /// What the last opened SBS package held that MaterialCraft couldn't read; empty after a clean open.
+    pub load_warnings: Vec<String>,
     pub clipboard: Option<Clip>,
     /// The last cook of the open graph.
     pub cooked: Cooked,
@@ -146,7 +158,7 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    decoded: Arc<Mutex<HashMap<String, Image>>>,
+    decoded: Arc<Mutex<HashMap<u64, Image>>>,
 }
 
 impl Session {
@@ -162,6 +174,7 @@ impl Session {
             camera: CameraPrefs::default(),
             modified: false,
             log: Vec::new(),
+            load_warnings: Vec::new(),
             clipboard: None,
             cooked: Cooked::default(),
             dirty: true,
@@ -285,18 +298,25 @@ impl Session {
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
-        let res: Vec<(String, Arc<Vec<u8>>)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
+        let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
+        // Free images of resources that were deleted or replaced.
+        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|k, _| res.iter().any(|(_, b)| b.content_hash() == *k));
         move |name: &str| {
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = format!("{name}:{}", bytes.len());
+            let key = bytes.content_hash();
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes).ok()?;
+            let img = materialcraft_formats::decode(bytes.as_slice()).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
+    }
+
+    /// Forget every decoded resource image (the package was replaced).
+    pub(crate) fn clear_decoded(&self) {
+        self.decoded.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     /// Cook the open graph now (at the preview size), on this thread.
@@ -304,21 +324,16 @@ impl Session {
         let dec = self.resource_decoder();
         let mut opts = Options::new(&dec);
         opts.max_size = self.preview_size;
-        let cooked = {
-            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            materialcraft_eval::cook(&self.pkg, self.graph, &opts, &mut cache)
-        };
-        self.cooked = cooked;
+        self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
         self.dirty = false;
         &self.cooked
     }
 
-    /// Cook graph `gi` at full size (exports), without touching the preview results.
+    /// Cook graph `gi` at full size, without touching the preview results.
     pub fn cook_full(&self, gi: usize) -> Cooked {
         let dec = self.resource_decoder();
         let opts = Options::new(&dec);
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        materialcraft_eval::cook(&self.pkg, gi, &opts, &mut cache)
+        materialcraft_eval::cook(&self.pkg, gi, &opts, &self.cache)
     }
 
     /// Cook if the graph changed since the last cook.
@@ -360,6 +375,26 @@ impl Session {
         self.custom_mesh = Some((name.to_string(), Arc::new(mesh)));
         self.view3d.scene = "custom".into();
         Ok(())
+    }
+
+    /// Nodes of the open graph whose last cook failed, with the error, and how many placeholders for missing SBS nodes failed besides.
+    pub fn cook_failures(&self) -> (Vec<(NodeId, &str)>, usize) {
+        let mut failed = Vec::new();
+        let mut placeholders = 0;
+        for node in self.graph().map(|g| g.nodes.as_slice()).unwrap_or_default() {
+            let Some(error) = self.cooked.nodes.get(&node.id).and_then(|r| r.error.as_deref()) else { continue };
+            if node.def == materialcraft_core::MISSING_NODE {
+                placeholders += 1;
+            } else {
+                failed.push((node.id, error));
+            }
+        }
+        (failed, placeholders)
+    }
+
+    /// Log a warning, shown highlighted in the Console.
+    pub fn warn(&mut self, msg: impl Into<String>) {
+        self.log(format!("{WARNING_PREFIX}{}", msg.into()));
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {

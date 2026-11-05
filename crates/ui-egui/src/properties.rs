@@ -43,10 +43,10 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let node = app.session.selection.last().and_then(|id| app.session.graph().ok()?.node(*id).ok().cloned());
-        match node {
+        ui.push_id((app.session.graph, node.as_ref().map(|n| n.id)), |ui| match node {
             Some(n) => node_props(app, ui, &n),
             None => graph_props(app, ui),
-        }
+        });
     });
 }
 
@@ -85,6 +85,10 @@ fn node_props(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine:
         return;
     }
     section(ui, "specific", tr("Specific parameters"), |ui| {
+        if n.def == "levels" {
+            crate::levels_editor::show(app, ui, n);
+            ui.add_space(6.0);
+        }
         let exposed: Vec<(String, String)> =
             app.session.graph().map(|g| g.exposed.iter().map(|e| (e.id.clone(), e.label.clone())).collect()).unwrap_or_default();
         for p in &def.params {
