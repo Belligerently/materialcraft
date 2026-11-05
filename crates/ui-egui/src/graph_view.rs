@@ -1114,7 +1114,7 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
                 pick = Some(d.id);
             }
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
-                for (i, d) in list.iter().enumerate().take(60) {
+                for (i, d) in list.iter().enumerate() {
                     let r = ui.add(
                         egui::Button::selectable(i == s.sel, format!("{}   ", d.label))
                             .right_text(egui::RichText::new(d.group()).size(10.0).color(tk.text_dim)),
@@ -1455,5 +1455,72 @@ mod tests {
             assert!(r.contains(p) || (p.x - r.left()).abs() < 1e-3);
             assert!(p.y > r.top() + HEADER_H && p.y < r.bottom() - FOOTER_H);
         }
+    }
+    fn search_harness(render: bool) -> egui_kittest::Harness<'static, MaterialCraftApp> {
+        let app = MaterialCraftApp::headless(materialcraft_engine::new_session(), crate::UiState::default());
+        let builder = egui_kittest::Harness::builder().with_size(vec2(1600.0, 960.0)).with_step_dt(1.0 / 60.0);
+        let builder = if render { builder.wgpu() } else { builder };
+        let mut h = builder.build_ui_state(
+            |ui, app: &mut MaterialCraftApp| {
+                app.step(&ui.ctx().clone());
+                app.draw(ui);
+            },
+            app,
+        );
+        h.run_steps(10);
+        let pointer = h.state().graph.view.center();
+        h.event(egui::Event::PointerMoved(pointer));
+        h.step();
+        h.key_press(egui::Key::Tab);
+        h.step();
+        assert!(h.state().graph.search.is_some());
+        h
+    }
+
+    fn select_result_after_cutoff(h: &mut egui_kittest::Harness<'static, MaterialCraftApp>) -> &'static str {
+        for _ in 0..60 {
+            h.key_press(egui::Key::ArrowDown);
+            h.step();
+        }
+        h.run_steps(3); // Let scroll_to_me bring the selected row into view.
+        let selected = h.state().graph.search.as_ref().unwrap().sel;
+        assert_eq!(selected, 60);
+        let def = matches("")[selected];
+        let popup = h.ctx.memory(|m| m.area_rect(egui::Id::unique("node-search"))).unwrap();
+        fn visible(shape: &egui::epaint::Shape, clip: Rect, popup: Rect, label: &str) -> bool {
+            match shape {
+                egui::epaint::Shape::Text(t) => popup.contains(t.pos) && clip.contains(t.pos) && t.galley.text().trim_start().starts_with(label),
+                egui::epaint::Shape::Vec(v) => v.iter().any(|s| visible(s, clip, popup, label)),
+                _ => false,
+            }
+        }
+        assert!(
+            h.output().shapes.iter().any(|s| visible(&s.shape, s.clip_rect, popup, def.label)),
+            "keyboard-selected result {selected} ({}) is not visible in the popup",
+            def.label
+        );
+        def.id
+    }
+
+    #[test]
+    fn keyboard_search_selection_after_sixty_results_is_visible_and_inserts() {
+        let mut h = search_harness(false);
+        let expected = select_result_after_cutoff(&mut h);
+        h.key_press(egui::Key::Enter);
+        h.step();
+        assert!(h.state().graph.search.is_none());
+        let graph = h.state().session.graph().unwrap();
+        assert_eq!(graph.nodes.len(), 1);
+        assert_eq!(graph.nodes[0].def, expected);
+    }
+
+    #[test]
+    #[ignore = "requires an offscreen GPU"]
+    fn search_result_after_sixty_screenshot() {
+        let mut h = search_harness(true);
+        select_result_after_cutoff(&mut h);
+        let dir = std::path::PathBuf::from(std::env::var_os("MC_SNAPSHOT_DIR").expect("set MC_SNAPSHOT_DIR"));
+        std::fs::create_dir_all(&dir).unwrap();
+        h.render().unwrap().save(dir.join("search-result-61.png")).unwrap();
     }
 }
