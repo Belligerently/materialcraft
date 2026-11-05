@@ -208,6 +208,23 @@ pub fn parse_events(list: &[Value]) -> Result<Vec<Scripted>, String> {
     Ok(frames)
 }
 
+/// Recursive JSON merge: objects merge key by key, anything else in `patch` replaces `dst`.
+fn merge_json(dst: &mut Value, patch: &Value) {
+    match (dst, patch) {
+        (Value::Object(d), Value::Object(p)) => {
+            for (k, v) in p {
+                match d.get_mut(k) {
+                    Some(slot) => merge_json(slot, v),
+                    None => {
+                        d.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (slot, v) => *slot = v.clone(),
+    }
+}
+
 pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: &Value) -> Value {
     match method {
         "ping" => ok(json!("pong")),
@@ -260,13 +277,13 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         }
         "ui.set" => {
             let mut cur = serde_json::to_value(&app.ui).unwrap_or(Value::Null);
-            if let (Some(obj), Some(patch)) = (cur.as_object_mut(), p.as_object()) {
-                for (k, v) in patch {
-                    obj.insert(k.clone(), v.clone());
-                }
+            if p.is_object() {
+                merge_json(&mut cur, p);
             }
-            match serde_json::from_value(cur) {
-                Ok(ui) => {
+            match serde_json::from_value::<crate::state::UiState>(cur) {
+                Ok(mut ui) => {
+                    ui.graph_camera = ui.graph_camera.sanitized();
+                    ui.image_camera = ui.image_camera.sanitized();
                     app.ui = ui;
                     ok(Value::Null)
                 }
@@ -315,5 +332,34 @@ mod tests {
         assert!(parse_events(&[json!({"type": "key", "key": "NoSuchKey"})]).is_err());
         assert!(parse_events(&[json!({"type": "click"})]).is_err());
         assert!(parse_events(&[json!({"pos": [1, 2]})]).is_err());
+    }
+
+    fn app() -> MaterialCraftApp {
+        MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::state::UiState::default())
+    }
+
+    #[test]
+    fn ui_set_merges_nested_objects_instead_of_resetting_siblings() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.ui.prefs.ui_scale = 1.5;
+        app.ui.prefs.autosave_minutes = 9;
+        let r = handle(&mut app, &ctx, "ui.set", &json!({"prefs": {"thumbnails": false}}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert!(!app.ui.prefs.thumbnails);
+        assert_eq!(app.ui.prefs.ui_scale, 1.5);
+        assert_eq!(app.ui.prefs.autosave_minutes, 9);
+    }
+
+    #[test]
+    fn ui_set_clamps_camera_zoom() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        let r = handle(&mut app, &ctx, "ui.set", &json!({"graphCamera": {"zoom": 0.0}, "imageCamera": {"zoom": 0.0, "fit": false}}));
+        assert_eq!(r["ok"], json!(true), "{r}");
+        assert!(app.ui.graph_camera.zoom > 0.0);
+        assert!(app.ui.image_camera.zoom > 0.0);
+        let c = &app.ui.graph_camera;
+        assert!((c.pan[0] + 100.0 / c.zoom).is_finite());
     }
 }
