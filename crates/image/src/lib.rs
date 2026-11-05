@@ -140,6 +140,8 @@ impl Image {
         if !fx.is_finite() || !fy.is_finite() {
             return [0.0, 0.0, 0.0, 1.0];
         }
+        // Huge but finite coordinates would saturate the i64 cast and overflow at `+ 1`.
+        let (fx, fy) = (fx.clamp(-1.0e9, 1.0e9), fy.clamp(-1.0e9, 1.0e9));
         let (x0, y0) = (fx.floor(), fy.floor());
         let (tx, ty) = (fx - x0, fy - y0);
         let (x0, y0) = (x0 as i64, y0 as i64);
@@ -303,6 +305,17 @@ pub fn srgb_to_linear(v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sample_survives_huge_coordinates() {
+        let img = Image::gray(8, 8, |x, _| x as f32);
+        for u in [1.0e30_f32, -1.0e30, f32::MAX, f32::MIN] {
+            for tile in [true, false] {
+                let p = img.sample(u, u, tile);
+                assert!(p.iter().all(|c| c.is_finite()));
+            }
+        }
+    }
 
     #[test]
     fn sample_wraps_and_clamps() {
