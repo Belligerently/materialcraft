@@ -595,14 +595,8 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
                 true
             }
             "file.importBitmap" => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft_engine::formats::IMAGE_EXTENSIONS).pick_file()
-                    && let Some(r) = app.run("file.importBitmap", json!({"path": p.display().to_string()}))
-                {
-                    let name = r["name"].as_str().unwrap_or_default().to_string();
-                    crate::graph_view::add_node_near_selection(app, "bitmap");
-                    if let Some(id) = app.session.selection.last().copied() {
-                        app.run("graph.node.param", json!({"id": id.0, "param": "resource", "value": name}));
-                    }
+                if let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft_engine::formats::IMAGE_EXTENSIONS).pick_file() {
+                    crate::graph_view::import_bitmap_file(app, &p.display().to_string());
                 }
                 true
             }
@@ -632,3 +626,7 @@ pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
         after_open(app);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "windows.test.rs"]
+mod tests;

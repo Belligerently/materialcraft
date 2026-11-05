@@ -158,6 +158,8 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
+    /// An open [`Session::begin_group`]: the snapshot taken at its start, and whether any edit ran.
+    group: Option<(Snapshot, bool)>,
     decoded: Arc<Mutex<HashMap<String, Image>>>,
 }
 
@@ -183,6 +185,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             merge_key: None,
+            group: None,
             decoded: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -209,6 +212,9 @@ impl Session {
     /// Like [`Session::edit`], but consecutive edits with the same `key` (dragging one slider)
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            return self.edit_inner(label, f);
+        }
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
             let r = f(self);
             if r.is_ok() {
@@ -223,8 +229,64 @@ impl Session {
         r
     }
 
+    /// Start grouping: every edit until [`Session::end_group`] becomes one undo entry labelled
+    /// `label` (a gesture that runs several commands, such as rewiring a link). Nothing is
+    /// recorded if no edit ran. A group started inside a group is ignored.
+    pub fn begin_group(&mut self, label: &str) {
+        if self.group.is_none() {
+            self.merge_key = None;
+            self.group = Some((self.snapshot(label), false));
+        }
+    }
+
+    /// Close the group opened by [`Session::begin_group`], recording one undo entry if any edit ran.
+    pub fn end_group(&mut self) {
+        if let Some((snap, edited)) = self.group.take()
+            && edited
+        {
+            self.undo.push(snap);
+            if self.undo.len() > MAX_UNDO {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    /// Run `f` as one undo entry, however many edits it makes. On error everything `f` did is
+    /// undone and nothing is recorded.
+    pub fn group<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            return f(self);
+        }
+        self.begin_group(label);
+        let r = f(self);
+        match r {
+            Ok(_) => self.end_group(),
+            Err(_) => {
+                if let Some((snap, _)) = self.group.take() {
+                    self.restore(snap);
+                }
+            }
+        }
+        r
+    }
+
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         let snap = self.snapshot(label);
+        if let Some((_, edited)) = self.group.as_mut() {
+            // Inside a group: the group's own snapshot is the undo entry.
+            *edited = true;
+            return match f(self) {
+                Ok(v) => {
+                    self.changed();
+                    Ok(v)
+                }
+                Err(e) => {
+                    self.restore(snap);
+                    Err(e)
+                }
+            };
+        }
         match f(self) {
             Ok(v) => {
                 self.undo.push(snap);
@@ -268,6 +330,7 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.undo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -279,6 +342,7 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.redo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -294,6 +358,7 @@ impl Session {
         self.undo.clear();
         self.redo.clear();
         self.merge_key = None;
+        self.group = None;
     }
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
@@ -402,3 +467,7 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session.test.rs"]
+mod tests;
