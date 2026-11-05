@@ -602,8 +602,8 @@ mod tests {
         let blur = p.graphs[0].add_node("anisotropic_blur", [150.0, 100.0]);
         p.graphs[0].connect(noise, "output", blur, "input").unwrap();
         p.graphs[0].node_mut(blur).unwrap().params.insert("intensity".into(), Value::Float(1e30));
-        let mut cache = Cache::default();
-        let c = cook(&p, 0, &Options::new(&no_res), &mut cache);
+        let cache = Mutex::new(Cache::default());
+        let c = cook(&p, 0, &Options::new(&no_res), &cache);
         assert!(c.nodes[&blur].error.is_none(), "{:?}", c.nodes[&blur].error);
         assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((64, 64)));
     }
