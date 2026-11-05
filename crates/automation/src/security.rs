@@ -200,12 +200,12 @@ impl AuthDeadline {
     pub fn start(stream: &TcpStream, timeout: Duration) -> std::io::Result<AuthDeadline> {
         let stream = stream.try_clone()?;
         let (tx, rx) = channel::<()>();
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name("materialcraft-auth-deadline".into()).spawn(move || {
             // Dropping the deadline disconnects the channel and ends this thread at once.
             if let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(timeout) {
                 let _ = stream.shutdown(Shutdown::Both);
             }
-        });
+        })?;
         Ok(AuthDeadline { _cancel: tx })
     }
 }

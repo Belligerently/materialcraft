@@ -210,10 +210,12 @@ pub fn serve_listener(listener: TcpListener, h: Arc<Mutex<Headless>>, token: Str
             continue;
         };
         let (h, token) = (h.clone(), token.clone());
-        std::thread::spawn(move || {
+        if let Err(e) = std::thread::Builder::new().name("materialcraft-rpc-client".into()).spawn(move || {
             let _permit = permit;
             let _ = serve_connection(&h, stream, &token);
-        });
+        }) {
+            eprintln!("materialcraft: could not start an RPC connection: {e}");
+        }
     }
     Ok(())
 }

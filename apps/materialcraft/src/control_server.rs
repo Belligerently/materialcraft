@@ -22,16 +22,27 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Listen on `127.0.0.1:port` and return the requests for the UI thread to answer
 /// ([`ControlRequest::reply`]). Bind or token failures are printed and leave the channel empty.
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
-    let (tx, rx) = channel::<ControlRequest>();
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(e) => {
             eprintln!("materialcraft: control server failed to bind 127.0.0.1:{port}: {e}");
+            return channel().1;
+        }
+    };
+    start_listener(listener, ctx)
+}
+
+fn start_listener(listener: TcpListener, ctx: egui::Context) -> Receiver<ControlRequest> {
+    let (tx, rx) = channel::<ControlRequest>();
+    let addr = match listener.local_addr() {
+        Ok(addr) => addr,
+        Err(e) => {
+            eprintln!("materialcraft: could not determine the control port: {e}");
             return rx;
         }
     };
     // After binding, so an app that cannot listen never replaces another server's token.
-    let token = match server_token(port) {
+    let token = match server_token(addr.port()) {
         Ok((token, Some(path))) => {
             eprintln!("materialcraft: control token written to {}", path.display());
             token
@@ -42,8 +53,10 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
             return rx;
         }
     };
-    eprintln!("materialcraft: control server listening on 127.0.0.1:{port}");
-    std::thread::spawn(move || accept(listener, &token, &tx, &ctx));
+    eprintln!("materialcraft: control server listening on {addr}");
+    if let Err(e) = std::thread::Builder::new().name("materialcraft-control".into()).spawn(move || accept(listener, &token, &tx, &ctx)) {
+        eprintln!("materialcraft: could not start the control server: {e}");
+    }
     rx
 }
 
@@ -57,10 +70,12 @@ fn accept(listener: TcpListener, token: &str, tx: &Sender<ControlRequest>, ctx: 
             continue;
         };
         let (tx, ctx, token) = (tx.clone(), ctx.clone(), token.to_string());
-        std::thread::spawn(move || {
+        if let Err(e) = std::thread::Builder::new().name("materialcraft-control-client".into()).spawn(move || {
             let _permit = permit;
             serve(stream, &token, &tx, &ctx);
-        });
+        }) {
+            log::warn!("could not start a control connection: {e}");
+        }
     }
 }
 
@@ -139,6 +154,18 @@ mod tests {
     use super::*;
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn ephemeral_listener_uses_its_actual_port_for_the_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert_ne!(addr.port(), 0);
+        let _requests = start_listener(listener, egui::Context::default());
+        let token = materialcraft_automation::security::client_token(addr.port(), None).unwrap();
+        let (mut w, mut r) = connect(addr);
+        let auth = json!({"method": "auth", "params": {"token": token}}).to_string();
+        assert_eq!(call(&mut w, &mut r, &auth).unwrap()["ok"], true);
+    }
 
     /// A server on a free port whose app side answers every request with its method name.
     fn server() -> std::net::SocketAddr {
