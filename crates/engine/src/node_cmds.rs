@@ -177,8 +177,14 @@ fn reset(s: &mut Session, p: &J) -> Result<J> {
         match &param {
             Some(k) => {
                 n.params.remove(k);
+                n.bindings.remove(k);
+                n.functions.remove(k);
             }
-            None => n.params.retain(|k, _| k == "graph" || k == "identifier"),
+            None => {
+                n.params.retain(|k, _| k == "graph" || k == "identifier");
+                n.bindings.clear();
+                n.functions.clear();
+            }
         }
         Ok(J::Null)
     })
