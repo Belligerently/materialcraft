@@ -233,6 +233,8 @@ pub struct Settings {
     pub exposure: f32,
     /// Degrees.
     pub env_rotation: f32,
+    /// Interpret the green channel as DirectX (-Y) instead of OpenGL (+Y).
+    pub normal_y_flip: bool,
     /// Show the (blurred) environment behind the mesh instead of the flat backdrop.
     pub show_env: bool,
     /// 1 = one ray per pixel, 2 = 2×2 supersampling.
@@ -259,6 +261,7 @@ impl Default for Settings {
             tiling: 1.0,
             exposure: 0.0,
             env_rotation: 0.0,
+            normal_y_flip: false,
             show_env: false,
             supersample: 1,
             ao_rays: 0,
@@ -417,7 +420,10 @@ fn shade(scene: &Scene, maps: &Maps, light: &Lighting, s: &Settings, origin: Vec
     let ao = tex_gray(&maps.ao, uv, 1.0).clamp(0.0, 1.0);
     let n = match tex(&maps.normal, uv) {
         Some(c) => {
-            let t = Vec3::new(c[0] * 2.0 - 1.0, c[1] * 2.0 - 1.0, c[2] * 2.0 - 1.0);
+            let mut t = Vec3::new(c[0] * 2.0 - 1.0, c[1] * 2.0 - 1.0, c[2] * 2.0 - 1.0);
+            if s.normal_y_flip {
+                t.y = -t.y;
+            }
             // OpenGL convention: green points along +v in texture space, which is -bitangent
             // with top-left UVs.
             (tan * t.x - bit * t.y + nrm * t.z.max(0.05)).normalize_or_zero()
