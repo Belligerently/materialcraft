@@ -1,6 +1,8 @@
-//! The explorer: the open package, its graphs and its bitmap resources.
+//! The package tree, its graphs, named outputs and resources
 
-use egui::{RichText, Sense, Ui, vec2};
+use egui::{RichText, Ui};
+
+mod tree_row;
 use egui_phosphor::regular as icon;
 use serde_json::json;
 
@@ -34,44 +36,77 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         ui.label(RichText::new(format!("{}  {name}", icon::PACKAGE)).strong().color(tk.text_strong));
         let mut open: Option<usize> = None;
         let mut action: Option<(&str, usize)> = None;
-        for (i, g) in app.session.pkg.graphs.iter().enumerate() {
-            let on = i == app.session.graph;
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click());
-            crate::widgets::name(&resp, egui::Role::TreeItem, &g.name);
-            if on {
-                ui.painter().rect_filled(r, 4.0, tk.row_selected);
-                ui.painter().rect_stroke(r, 4.0, egui::Stroke::new(1.0, tk.accent), egui::StrokeKind::Inside);
-            } else if resp.hovered() {
-                ui.painter().rect_filled(r, 4.0, tk.row_hover);
-            }
-            ui.painter().text(
-                r.left_center() + vec2(18.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                format!("{}  {}", icon::TREE_STRUCTURE, g.name),
-                egui::FontId::proportional(12.0),
-                if on { tk.text_strong } else { tk.text },
-            );
-            if resp.clicked() {
-                open = Some(i);
-            }
-            resp.context_menu(|ui| {
-                for (label, a) in [("Open", "open"), ("Export outputs...", "export"), ("Duplicate", "duplicate"), ("Delete", "delete")] {
-                    if ui.button(tr(label)).clicked() {
-                        action = Some((a, i));
-                        ui.close();
-                    }
+        let mut output = None;
+        for (index, graph) in app.session.pkg.graphs.iter().enumerate() {
+            let active = index == app.session.graph;
+            let function = graph.function.is_some();
+            let mut header = |ui: &mut Ui| {
+                let symbol = if function { icon::FUNCTION } else { icon::TREE_STRUCTURE };
+                let response = tree_row::show(ui, &graph.name, symbol, active);
+                if response.clicked() {
+                    open = Some(index);
                 }
+                response.context_menu(|ui| {
+                    for (label, command) in [("Open", "open"), ("Export outputs...", "export"), ("Duplicate", "duplicate"), ("Delete", "delete")] {
+                        if ui.button(tr(label)).clicked() {
+                            action = Some((command, index));
+                            ui.close();
+                        }
+                    }
+                });
+            };
+
+            if function {
+                ui.horizontal(|ui| {
+                    ui.add_space(ui.spacing().indent);
+                    header(ui);
+                });
+                continue;
+            }
+
+            let id = ui.make_persistent_id(("graph", index, &graph.name));
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true).show_header(ui, header).body(|ui| {
+                ui.indent("outputs", |ui| {
+                    for node in graph.nodes.iter().filter(|node| node.def == "output") {
+                        ui.push_id(node.id, |ui| {
+                            let name = materialcraft_engine::eval::identifier(node);
+                            let selected = active && app.session.selection.contains(&node.id);
+                            let response = tree_row::show(ui, &name, icon::IMAGE, selected);
+
+                            if response.clicked() || response.double_clicked() {
+                                output = Some((index, node.id, response.double_clicked()));
+                            }
+                        });
+                    }
+                });
             });
         }
         if let Some(i) = open {
             app.run("graph.open", json!({"graph": i}));
         }
+        if let Some((index, node, preview)) = output {
+            if index != app.session.graph && app.run("graph.open", json!({"graph": index})).is_none() {
+                return;
+            }
+
+            app.pattern_editor = None;
+            app.function_editor = None;
+            app.run("graph.annotation.select", json!({}));
+            app.run("graph.select", json!({"ids": [node.0]}));
+            app.graph.inspected_node = Some(node);
+            app.ui.dock.focus(crate::docking::Panel::Properties);
+            if preview {
+                app.run("view.2d", json!({"node": node.0}));
+                app.ui.dock.focus(crate::docking::Panel::View2d);
+            }
+        }
+
         match action {
             Some(("open", i)) => {
                 app.run("graph.open", json!({"graph": i}));
             }
             Some(("export", i)) => {
-                // The export window works on the open graph.
+                // The export window works on the open graph
                 if app.run("graph.open", json!({"graph": i})).is_some() {
                     app.ui.windows.export = true;
                 }

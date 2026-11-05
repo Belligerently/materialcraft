@@ -7,20 +7,18 @@ them). Everything below the UI is plain Rust with no UI toolkit and builds for
 `wasm32-unknown-unknown`.
 
 ```text
-L0  core      document model: Package → Graph → Node / Connection / Frame / Comment / Pin / ExposedParam;
+L0  core      document model: Package → Graph → Node / Connection / Frame / Comment / Pin / ExposedParameter;
               Value (float, vectors, int, bool, color, enum, text, curve, gradient, function graph)
 L0  image     Image: grayscale or RGBA f32 planes behind an Arc (copy-on-write, free to share);
               wrap/clamp sampling, bilinear, box/bilinear resampling, sRGB, 8-bit display
 L0  geom      meshes, primitives (rounded cube, sphere, cylinder, plane, torus, material ball), BVH, camera
-L1  nodes     the node library: NodeDef (ports, parameters, category, cook fn) for 227 nodes, the
-              tileable noise primitives, shared image ops (blur, EDT, HSL, blend modes) and the
-              function-graph compiler/evaluator for pixel and value processors
+L1  nodes     30 main-graph entries (NodeDefinition), 85 function operations, four pattern node kinds;
+              shared image operations and iterative function/pattern execution
 L2  eval      cooking: topological order, output sizes (relative to input / parent, absolute, preview
               cap), parameter resolution (defaults, overrides, bindings to exposed inputs), the
               content-addressed LRU cache, graph instances (sub-graphs, recursion-guarded)
-L2  formats   .sbs packages (the main format, sbs.rs), .mcraft packages (zip: package.json +
-              resources/), .mcmat portable materials, bitmap
-              decode, texture encode (PNG/JPEG/TGA/TIFF/BMP/WEBP/EXR/HDR at 8/16/32 bits), atomic writes
+L2  formats   native .sbs packages, .mcmat portable materials, bitmap/SVG decode,
+              texture encode (PNG/JPEG/TGA/TIFF/BMP/WEBP/EXR/HDR), atomic writes
 L3  engine    Session (package, open graph, selection, 2D/3D view state, snapshot undo, cache),
               the command registry, inspect, sample materials and graph templates
 L3  render    the 3D view: BVH ray casts, parallax occlusion from the height output, GGX PBR with
@@ -76,26 +74,16 @@ histogram editor with range handles on top of its sliders ([levels-editor.md](le
 
 ## Files
 
-SBS (`.sbs`, `formats/src/sbs.rs`) is the main project format: XML with the package's graphs, nodes,
-wires, parameters, graph inputs and outputs, frames and comments, and bitmaps embedded as
-zlib/base64 data. MaterialCraft writes the SBS data plus, in a trailing XML comment, its own exact
-copy of the package with a hash of the `<content>` it belongs to; reading uses the exact copy while
-the hash matches (so nothing MaterialCraft-specific is lost) and the SBS data otherwise. Reading never
-fails on what MaterialCraft lacks: atomic filters map to atomic nodes, library nodes map by name,
-instances of graphs in the same file become graph instances, and anything else becomes a
-`missing_node` placeholder (`core::MISSING_NODE`) that keeps its ports, wires and raw SBS parameters,
-cooks to a soft error, and is written back unchanged. Every gap is a warning in
-`Session::load_warnings`, the Console (`Session::warn`) and `session.inspect` (`package.warnings`).
-Bitmaps an SBS file keeps next to it load from its folder only (`file_cmds::linked_files`).
+SBS is the project format. The codec writes native filters, ports, parameters, function graphs,
+pattern graphs and resources directly, without a private payload. Unsupported imports produce
+warnings; unknown nodes remain placeholders. Library reference loading is not part of the current
+primitive workflow. `.mcraft` is no longer supported.
 
-A `.mcraft` package (the older format, still read and written: packages opened from a `.mcraft`
-save back to it) is a zip: `package.json` (the serde `Package`, format version 1) and
-`resources/<name>` for embedded bitmaps. Node parameters are stored only where they differ from the
-catalog defaults, so new defaults reach old files and files stay small.
+See [atomic-workflow.md](atomic-workflow.md) for the tested scope and remaining limitations.
 
 ## Other apps
 
-A `.mcmat` portable material (`formats/src/material.rs`, `engine/src/material_cmds.rs`) holds a
+A `.mcmat` portable material (`formats/src/material/`, `engine/src/material_cmds.rs`) holds a
 graph's cooked maps, its portable exposed inputs, presets and input nodes, and the source package.
 TextureCraft paints with it and re-cooks it by running `materialcraft-cli run <package>
 file.exportMaterial {path, size, values, inputs}`: the apps share the file format and the command

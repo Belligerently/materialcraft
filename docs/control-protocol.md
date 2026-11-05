@@ -35,7 +35,7 @@ Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 | `bitmap.import {path, name?}` | headless | embed an image as a resource |
 | `outputs.export {dir, format?, pattern?, depth?, size?, graph?}` | headless | cook at full size and write every output |
 | `render {view?, width?, height?, yaw?, pitch?, scene?, node?, port?, full?, tiling?, hq?, displacement?}` | headless | PNG (base64) of the 3D view or of one node; `hq` is the beauty render (displaced mesh, ray-traced AO, shadowed key light, 3×3 supersampling), `displacement` its depth in scene radii |
-| `ui.inspect` | app | UI state, the graph view rectangle, every node's screen rectangle, every port's screen position, fps, toasts |
+| `ui.inspect` | app | UI state, the graph view rectangle, every node's screen rectangle, every port's identifier, display label and screen position, fps, toasts |
 | `ui.menu.list` / `ui.menu.invoke {id}` | app | the menu catalog; behave like a click |
 | `ui.set {...}` | app | merge fields into the UI state |
 | `ui.input {events}` | app | synthetic input, below |
@@ -68,6 +68,8 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 | Command | Params |
 |---|---|
 | `file.new` | `{template?, name?, size?}`; templates from `graph.templates` (`empty`, `pbr`, `bricks`, `stone_tiles`, `wood`, `rusty_metal`, `fabric`, `ground`) |
+| `graph.node.edit` | `{}` resolves the selected FX-Map to `{node, parameter}`; use `ui.menu.invoke` to enter its subgraph in the graph panel |
+| `graph.pattern.set` | `{id, pattern}` replaces an FX-Map subgraph with cycle validation and undo |
 | `graph.node.add` | `{def, at?, params?, connectFrom?: {node, port?}, label?}` |
 | `graph.connect` / `graph.disconnect` | `{from, fromPort?, to, toPort?}` / `{to, toPort}` |
 | `graph.wire.insertDot` | `{to, toPort, at?}`: split the wire feeding `to.toPort` with a reroute Dot node at `at` (graph point, default midway), selected |
@@ -84,30 +86,39 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 
 ## Function graphs
 
-Pixel and value processors carry a `function` parameter: `{"nodes": [{"id", "op", "inputs": [ids],
-"value"?}], "output": id}`. Ops: constants (`const_float`, `const_float2/3/4`, `const_int`,
-`const_bool`), variables (`get_pos` = normalized pixel position, `get_size`, `get_var` with
-`value` = an exposed input id), samplers (`sample_gray`, `sample_color` with `value` = input index
-0–3, input = a float2 position), vectors (`vec2/3/4`, `swizzle` with `value` = `"xy"` etc.),
-casts, arithmetic (`add sub mul div mod neg dot`), logic and comparison (`and or not gt ge lt le eq
-ne`), functions (`abs floor ceil frac sqrt exp log sin cos tan atan2 pow min max clamp lerp length
-normalize rand noise`) and `if_else`. Values are 4-wide; scalars broadcast.
+`file.new {"kind": "function", "name": "Calculation"}` creates a standalone Function Graph.
+Omit `kind`, or use `"material"`, for a Graph. `graph.function.set {"function": {...}}` replaces
+the active standalone function through one validated, undoable command.
+
+A function has `nodes` and an optional `output` node id. Each node has `id`, native `op`,
+`inputs` (source ids or null for unwired ports), optional `value`, `type_code` and `pos`.
+For example, `const_float1` supplies a scalar and `mul` multiplies its `a` and `b` inputs.
+The catalog in `crates/nodes/src/function/catalog.rs` defines all native operation and port ids.
+Processors and dynamic parameters use the same function representation. Graph validation and
+execution use bounded iterative traversal and reject cycles.
+
+`graph.annotation.select {"kind": "frame"|"comment", "id": ...}` selects an annotation.
+`graph.frame.edit` accepts `title`, `titleVisible`, `description`, `color` and `rect`.
+`graph.frame.move {"id": ..., "by": [dx, dy], "snapToGrid": true}` moves enclosed nodes,
+comments, nested frames and pins together. `graph.comment.edit` accepts `text`, `at` and `size`.
+`session.inspect` includes annotation selection and the standalone function; `ui.inspect`
+includes frame and comment rectangles for synthetic input.
 
 ## Portable materials (TextureCraft)
 
 A `.mcmat` portable material is a zip: `material.json` (manifest), `maps/<usage>.png` and
-`source.mcraft` (the package). TextureCraft applies it as a fill layer and keeps the exposed inputs
+`source.sbs` (the package). TextureCraft applies it as a fill layer and keeps the exposed inputs
 editable, re-cooking through `materialcraft-cli`. The format is a convention the two apps share;
 each has its own reader and writer (`crates/formats/src/material.rs` here), so keep them in step.
 
 ```json
-{ "format": "craft-material", "version": 1, "name": "Brick wall", "graph": "Brick_wall", "size": [2048, 2048],
+{ "format": "craft-material", "version": 2, "name": "Brick wall", "graph": "Brick_wall", "size": [2048, 2048],
   "maps": [{"usage": "baseColor", "file": "maps/baseColor.png", "colorSpace": "srgb"}],
   "parameters": [{"id": "wear", "label": "Wear", "default": {"t": "float", "v": 0.5}, "min": 0, "max": 1,
                   "value": {"t": "float", "v": 0.8}}],
   "inputs": [{"identifier": "curvature", "kind": "gray"}],
   "presets": [{"name": "Worn", "values": {"wear": {"t": "float", "v": 1.0}}}],
-  "source": "source.mcraft" }
+  "source": "source.sbs" }
 ```
 
 - Usages: `baseColor`, `normal`, `roughness`, `metallic`, `height`, `ambientOcclusion`, `emissive`,
@@ -119,15 +130,15 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 - Inputs are the graph's input nodes. Mesh maps feed them by identifier: `ambientOcclusion`,
   `curvature`, `thickness`, `position`, `worldNormal`, `normal`, `height`, `id`, `bentNormal`,
   `opacity`, `colorMap`, `worldDirection`.
-- Readers ignore unknown fields and refuse a `version` newer than they know.
+- Readers ignore unknown fields and require manifest `version` 2.
 
 | Command | Params |
 |---|---|
-| `file.exportMaterial` | `{path, graph?, size? (px), values? {input: value}, inputs? {identifier: image path}}`: cook and write a `.mcmat`. TextureCraft runs `materialcraft-cli run source.mcraft file.exportMaterial {...}` to re-cook at its texture set's resolution with its own values and baked mesh maps |
+| `file.exportMaterial` | `{path, graph?, size? (px), values? {input: value}, inputs? {identifier: image path}}`: cook and write a `.mcmat`. TextureCraft runs `materialcraft-cli run source.sbs file.exportMaterial {...}` to re-cook at its texture set's resolution with its own values and baked mesh maps |
 | `file.sendToTextureCraft` | `{graph?}`: export into TextureCraft's library folder (`Documents/TextureCraft/library`), where its shelf lists it |
 | `graph.input.bind` / `graph.input.unbind` | `{identifier, resource? \| path?}` / `{identifier}`: a preview image for an input node (a mesh map exported from TextureCraft), saved in the package |
-| `file.open` | opens `.sbs` (by content) and `.mcraft` packages, and a `.mcmat`'s source package, on its graph, with no file name. Returns `warnings`: what an SBS file holds that MaterialCraft can't read yet (missing nodes are kept as placeholders); also in `session.inspect` as `package.warnings` |
-| `file.save` | `{path?}`: SBS unless the file is `.mcraft`; `.sbs` is appended when `path` has no package extension |
+| `file.open` | opens native `.sbs` packages, and a `.mcmat`'s source package, on its graph, with no file name. Returns `warnings`: what an SBS file holds that MaterialCraft can't read yet (missing nodes are kept as placeholders); also in `session.inspect` as `package.warnings` |
+| `file.save` | `{path?}`: native SBS; `.sbs` is appended when the path does not end in `.sbs` |
 
 ## MCP tools
 
@@ -136,3 +147,7 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 `outputs_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
 `ui_screenshot`, `ui_inspect`, `ui_menu_invoke`, `ui_input`. `package_open` opens `.mcmat` files
 too; exporting one is CLI-only for now (the workspace sandbox refuses `file.*` commands).
+
+While an FX-Map subgraph is open, `ui.inspect.subgraph` identifies its owner and selection. Canvas
+node IDs and ports refer to that embedded graph. `ui.menu.invoke` with `ui.graph.parent` returns
+to the parent canvas.

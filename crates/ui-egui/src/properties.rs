@@ -1,25 +1,38 @@
-//! Properties: the selected node's base and specific parameters, or the graph's own settings,
-//! inputs and outputs when no node is selected. Every change is an engine command (slider drags
-//! merge into one undo step).
-
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use egui_phosphor::regular as icon;
 use materialcraft_engine::core::{Curve, Gradient, NodeId, OutputFormat, SizeMode, Value};
-use materialcraft_engine::nodes::ParamDef;
+use materialcraft_engine::nodes::ParameterDefinition;
 use serde_json::{Value as J, json};
 
 use crate::MaterialCraftApp;
 use crate::i18n::tr;
 use crate::theme::Tokens;
 
-/// The panel title: "<node> - Properties" or "<graph> - Properties".
+/// The panel title: "<node> - Properties" or "<graph> - Properties"
 pub fn title(app: &MaterialCraftApp) -> String {
-    let sel = app.session.selection.last().and_then(|id| app.session.graph().ok()?.node(*id).ok().map(crate::graph_view::node_label));
+    if crate::pattern::active(app) {
+        return crate::pattern::properties::title(app);
+    }
+
+    if let Some(selection) = app.session.annotation_selection {
+        let name = match selection {
+            materialcraft_engine::AnnotationSelection::Frame(_) => tr("Frame"),
+            materialcraft_engine::AnnotationSelection::Comment(_) => tr("Comment"),
+        };
+        return format!("{name} - {}", tr("Properties"));
+    }
+
+    if let Some(title) = crate::function::properties::title(app) {
+        return title;
+    }
+
+    let sel = crate::graph::node_selection::inspected(&app.session.selection, app.graph.inspected_node)
+        .and_then(|id| app.session.graph().ok()?.node(id).ok().map(crate::graph::node_label));
     let name = sel.or_else(|| app.session.graph().ok().map(|g| g.name.clone())).unwrap_or_default();
     format!("{name} - {}", tr("Properties"))
 }
 
-fn section(ui: &mut Ui, id: &str, title: &str, body: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, id: &str, title: &str, body: impl FnOnce(&mut Ui)) {
     let tk = Tokens::get(ui.ctx());
     let id = ui.make_persistent_id(id);
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
@@ -42,7 +55,22 @@ fn section(ui: &mut Ui, id: &str, title: &str, body: impl FnOnce(&mut Ui)) {
 pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let node = app.session.selection.last().and_then(|id| app.session.graph().ok()?.node(*id).ok().cloned());
+        if crate::pattern::active(app) {
+            crate::pattern::properties::show(app, ui);
+            return;
+        }
+
+        if let Some(selection) = app.session.annotation_selection {
+            ui.push_id((app.session.graph, format!("{selection:?}")), |ui| crate::annotation::show(app, ui, selection));
+            return;
+        }
+
+        if crate::function::properties::show(app, ui) {
+            return;
+        }
+
+        let node = crate::graph::node_selection::inspected(&app.session.selection, app.graph.inspected_node)
+            .and_then(|id| app.session.graph().ok()?.node(id).ok().cloned());
         ui.push_id((app.session.graph, node.as_ref().map(|n| n.id)), |ui| match node {
             Some(n) => node_props(app, ui, &n),
             None => graph_props(app, ui),
@@ -53,11 +81,11 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
 fn node_props(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine::core::Node) {
     let tk = Tokens::get(ui.ctx());
     let def = materialcraft_engine::nodes::find(&n.def);
-    // Header: label (renamable) and description.
+    // Header: label (renamable) and description
     ui.horizontal(|ui| {
-        ui.painter().rect_filled(Rect::from_min_size(ui.cursor().min + vec2(0.0, 2.0), vec2(4.0, 16.0)), 1.0, crate::graph_view::header_color(&n.def));
+        ui.painter().rect_filled(Rect::from_min_size(ui.cursor().min + vec2(0.0, 2.0), vec2(4.0, 16.0)), 1.0, crate::graph::header_color(&n.def));
         ui.add_space(8.0);
-        let mut label = if n.label.is_empty() { crate::graph_view::node_label(n) } else { n.label.clone() };
+        let mut label = if n.label.is_empty() { crate::graph::node_label(n) } else { n.label.clone() };
         let r = ui.add(egui::TextEdit::singleline(&mut label).desired_width(ui.available_width() - 4.0).font(egui::TextStyle::Heading));
         crate::widgets::name(&r, egui::Role::TextInput, "Node label");
         if r.changed() {
@@ -76,6 +104,10 @@ fn node_props(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine:
     }
     ui.add_space(4.0);
     section(ui, "base", tr("Base parameters"), |ui| base_params(app, ui, n));
+    crate::value_input_editor::show(app, ui, n);
+    if n.def == "input_value" {
+        crate::value_input_editor::default_value(app, ui, n);
+    }
     if n.def == "graph_instance" {
         section(ui, "instance", tr("Instance parameters"), |ui| instance_params(app, ui, n));
         return;
@@ -92,6 +124,9 @@ fn node_props(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine:
         let exposed: Vec<(String, String)> =
             app.session.graph().map(|g| g.exposed.iter().map(|e| (e.id.clone(), e.label.clone())).collect()).unwrap_or_default();
         for p in &def.params {
+            if n.def == "input_value" && p.id == "default" {
+                continue;
+            }
             let cur = n.params.get(p.id).cloned().unwrap_or_else(|| p.default.clone());
             if n.functions.contains_key(p.id) {
                 function_row(app, ui, n.id, p.id, p.label);
@@ -116,6 +151,7 @@ fn base_params(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine
                     SizeMode::RelativeToParent => "relativeToParent",
                     SizeMode::Absolute => "absolute",
                 };
+
                 let size = if m == SizeMode::Absolute { json!([10, 10]) } else { json!([0, 0]) };
                 app.run("graph.node.base", json!({"id": id, "sizeMode": key, "size": size}));
             }
@@ -129,6 +165,7 @@ fn base_params(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine
         } else {
             format!("{label}  x {}", 2f32.powi(b.size[axis]))
         };
+
         if crate::widgets::slider(ui, &caption, &mut v, lo..=hi, 0).changed() {
             let mut size = b.size;
             size[axis] = v.round() as i32;
@@ -145,6 +182,7 @@ fn base_params(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_engine
                     OutputFormat::F16 => "f16",
                     OutputFormat::F32 => "f32",
                 };
+
                 app.run("graph.node.base", json!({"id": id, "format": key}));
             }
         }
@@ -171,8 +209,8 @@ fn typed(v: &Value) -> J {
     serde_json::to_value(v).unwrap_or(J::Null)
 }
 
-/// One parameter: its editor, plus the expose/bind menu.
-fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParamDef, cur: Value, bound: Option<String>, exposed: &[(String, String)]) {
+/// One parameter: its editor, plus the expose/bind menu
+fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParameterDefinition, cur: Value, bound: Option<String>, exposed: &[(String, String)]) {
     let tk = Tokens::get(ui.ctx());
     if let Some(input) = &bound {
         ui.horizontal(|ui| {
@@ -190,10 +228,10 @@ fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParamDef
                 app.run("graph.node.reset", json!({"id": node.0, "param": p.id}));
                 ui.close();
             }
-            let dynamic = !matches!(p.default, Value::Text(_) | Value::Curve(_) | Value::Gradient(_) | Value::Function(_));
+            let dynamic = !matches!(p.default, Value::Text(_) | Value::Curve(_) | Value::Gradient(_) | Value::Function(_) | Value::PatternGraph(_));
             if dynamic && ui.button(tr("Set function...")).clicked() {
                 if app.run("graph.node.function", json!({"id": node.0, "param": p.id})).is_some() {
-                    app.fn_editor = Some(crate::function_editor::FnEditor::new(node, &format!("fn:{}", p.id)));
+                    app.function_editor = Some(crate::function::FunctionEditor::new(node, crate::function::FunctionTarget::Dynamic(p.id.to_string())));
                 }
                 ui.close();
             }
@@ -213,6 +251,7 @@ fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParamDef
             }
         });
     };
+
     match cur {
         Value::Float(mut v) => {
             if p.angle {
@@ -272,7 +311,14 @@ fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParamDef
             }
             resp_menu(app, &r);
         }
-        Value::Color(c) | Value::Float4(c) => {
+        Value::Float3(_) | Value::Float4(_) | Value::Int3(_) | Value::Int4(_) => {
+            ui.label(tr(p.label));
+            let mut value = cur.clone();
+            if crate::value_editor::show(ui, &mut value) {
+                set(app, node, p.id, serde_json::to_value(value).unwrap_or_default());
+            }
+        }
+        Value::Color(c) => {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(tr(p.label)).color(tk.text));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -329,24 +375,24 @@ fn param_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p: &ParamDef
                 set(app, node, p.id, typed(&Value::Gradient(ng)));
             }
         }
+        Value::PatternGraph(graph) => {
+            ui.label(format!("{}: {} nodes", p.label, graph.nodes.len()));
+        }
         Value::Function(f) => {
             ui.label(RichText::new(tr(p.label)).color(tk.text));
             crate::windows::function_summary(app, ui, node, p.id, &f);
         }
-        other => {
-            ui.label(format!("{}: {}", p.label, other.type_name()));
-        }
     }
 }
 
-/// A parameter driven by a function: its label, Edit and Remove.
+/// A parameter driven by a function: its label, Edit and Remove
 fn function_row(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, param: &str, label: &str) {
     let tk = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         ui.label(RichText::new(tr(label)).color(tk.text));
         ui.label(RichText::new(format!("{} {}", icon::FUNCTION, tr("function"))).color(tk.accent));
         if ui.small_button(tr("Edit")).clicked() {
-            app.fn_editor = Some(crate::function_editor::FnEditor::new(node, &format!("fn:{param}")));
+            app.function_editor = Some(crate::function::FunctionEditor::new(node, crate::function::FunctionTarget::Dynamic(param.to_string())));
         }
         if crate::widgets::icon_button(ui, icon::X, tr("Remove function"), false, 18.0).clicked() {
             app.run("graph.node.function", json!({"id": node.0, "param": param, "remove": true}));
@@ -360,6 +406,7 @@ fn instance_params(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_en
         ui.label(RichText::new(tr("The instanced graph is missing")).color(tk.danger));
         return;
     };
+
     let exposed = sub.exposed.clone();
     if ui.button(format!("{}  {}", icon::ARROW_SQUARE_OUT, tr("Open graph"))).clicked() {
         app.run("graph.open", json!({"graph": gi}));
@@ -376,8 +423,8 @@ fn instance_params(app: &mut MaterialCraftApp, ui: &mut Ui, n: &materialcraft_en
     }
 }
 
-/// The editor for one exposed input's value; returns the new value as JSON when it changed.
-fn input_editor(ui: &mut Ui, e: &materialcraft_engine::core::ExposedParam, cur: &Value) -> Option<J> {
+/// The editor for one exposed input's value; returns the new value as JSON when it changed
+fn input_editor(ui: &mut Ui, e: &materialcraft_engine::core::ExposedParameter, cur: &Value) -> Option<J> {
     match *cur {
         Value::Float(mut f) => {
             let v0 = f;
@@ -424,6 +471,7 @@ fn graph_props(app: &mut MaterialCraftApp, ui: &mut Ui) {
         ui.label(tr("No graph is open"));
         return;
     };
+
     let g = g.clone();
     section(ui, "graph-base", tr("Base parameters"), |ui| {
         ui.horizontal(|ui| {
@@ -435,6 +483,10 @@ fn graph_props(app: &mut MaterialCraftApp, ui: &mut Ui) {
                 app.run("graph.rename", json!({"name": name}));
             }
         });
+        if g.function.is_some() {
+            return;
+        }
+
         for (axis, label) in [(0usize, "Width"), (1, "Height")] {
             let mut v = g.size[axis] as f32;
             if crate::widgets::slider(ui, &format!("{}  {} px", tr(label), 1u32 << g.size[axis]), &mut v, 4.0..=13.0, 0).changed() {
@@ -486,7 +538,7 @@ fn graph_props(app: &mut MaterialCraftApp, ui: &mut Ui) {
             }
         }
         let mut last_group: Option<&str> = None;
-        let mut order: Vec<&materialcraft_engine::core::ExposedParam> = Vec::new();
+        let mut order: Vec<&materialcraft_engine::core::ExposedParameter> = Vec::new();
         for grp in &groups {
             order.extend(g.exposed.iter().filter(|e| e.group == *grp));
         }
@@ -525,8 +577,7 @@ fn graph_props(app: &mut MaterialCraftApp, ui: &mut Ui) {
     });
 }
 
-/// Preview images of the graph's input nodes: a bitmap resource, or (desktop) an image file such
-/// as a mesh map baked in TextureCraft.
+/// Preview images of the graph's input nodes: a bitmap resource, or (desktop) an image file such as a mesh map baked in TextureCraft
 fn input_previews(app: &mut MaterialCraftApp, ui: &mut Ui, g: &materialcraft_engine::core::Graph) {
     let inputs = materialcraft_engine::material_cmds::image_inputs(g);
     if inputs.is_empty() {
@@ -560,7 +611,7 @@ fn input_previews(app: &mut MaterialCraftApp, ui: &mut Ui, g: &materialcraft_eng
     });
 }
 
-/// Presets: apply one, save the current inputs under a name, delete one.
+/// Presets: apply one, save the current inputs under a name, delete one
 fn presets_bar(app: &mut MaterialCraftApp, ui: &mut Ui, g: &materialcraft_engine::core::Graph) {
     let name_id = ui.make_persistent_id("preset-name");
     let mut name: String = ui.data(|d| d.get_temp(name_id)).unwrap_or_default();
@@ -589,8 +640,7 @@ fn presets_bar(app: &mut MaterialCraftApp, ui: &mut Ui, g: &materialcraft_engine
     ui.data_mut(|d| d.insert_temp(name_id, name));
 }
 
-/// A tone curve editor: drag points, double-click to add one, right-click a point to remove it.
-/// Returns the new curve when it changed.
+/// A tone curve editor: drag points, double-click to add one, right-click a point to remove it. Returns the new curve when it changed
 pub fn curve_editor(ui: &mut Ui, id: &str, c: &Curve) -> Option<Curve> {
     let tk = Tokens::get(ui.ctx());
     let w = ui.available_width().min(240.0);
@@ -634,7 +684,7 @@ pub fn curve_editor(ui: &mut Ui, id: &str, c: &Curve) -> Option<Curve> {
         let mut nc = c.clone();
         let last = nc.points.len().saturating_sub(1);
         if let Some(pt) = nc.points.get_mut(i) {
-            // End points keep their x.
+            // End points keep their x
             if i != 0 && i != last {
                 pt.x = x;
             }
@@ -652,7 +702,7 @@ pub fn curve_editor(ui: &mut Ui, id: &str, c: &Curve) -> Option<Curve> {
     {
         let (x, _) = from_s(q);
         let mut nc = c.clone();
-        nc.points.push(materialcraft_engine::core::CurvePoint { x, y: c.eval(x) });
+        nc.points.push(materialcraft_engine::core::CurvePoint::new(x, c.eval(x)));
         nc.points.sort_by(|a, b| a.x.total_cmp(&b.x));
         out = Some(nc);
     }
@@ -668,8 +718,7 @@ pub fn curve_editor(ui: &mut Ui, id: &str, c: &Curve) -> Option<Curve> {
     out
 }
 
-/// A gradient editor: the ramp with its keys below; drag keys, click the ramp to add one, pick a
-/// key's color, right-click a key to remove it.
+/// A gradient editor: the ramp with its keys below; drag keys, click the ramp to add one, pick a key's color, right-click a key to remove it
 pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient) -> Option<Gradient> {
     let tk = Tokens::get(ui.ctx());
     let w = ui.available_width().min(260.0);
@@ -727,7 +776,7 @@ pub fn gradient_editor(ui: &mut Ui, id: &str, g: &Gradient) -> Option<Gradient> 
             None => {
                 let t = ((q.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
                 let mut ng = g.clone();
-                ng.keys.push(materialcraft_engine::core::GradientKey { pos: t, color: g.eval(t) });
+                ng.keys.push(materialcraft_engine::core::GradientKey::new(t, g.eval(t)));
                 ng.sort();
                 sel = ng.keys.iter().position(|k| k.pos == t).unwrap_or(0);
                 out = Some(ng);

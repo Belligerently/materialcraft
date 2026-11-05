@@ -1,5 +1,9 @@
 # Parity with the reference workflow
 
+> The assessment below predates the 2026-11-05 primitive rewrite. Its old library counts and
+> compatibility claims are historical. See [atomic-workflow.md](atomic-workflow.md) and
+> [ROADMAP.md](../ROADMAP.md) for the current scope and remaining validation.
+
 > **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (Files 60% → 70%: portable materials for TextureCraft) · **Target:** the professional node-based material workflow (desktop app; the web app is assessed later)
 
 **Overall: ≈ 67%** of a material artist's daily workflow works end to end (engine + UI +

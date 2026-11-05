@@ -1,5 +1,9 @@
 # Gaps
 
+> The assessment below predates the 2026-11-05 primitive rewrite. Its old library counts and
+> compatibility claims are historical. See [atomic-workflow.md](atomic-workflow.md) and
+> [ROADMAP.md](../ROADMAP.md) for the current scope and remaining validation.
+
 > **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (portable `.mcmat` materials closed the published-archive gap) · **Target:** the professional node-based material workflow
 
 Every known shortfall, most important first. Pick from the top.

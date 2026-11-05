@@ -33,7 +33,7 @@ fn histogram(px: &[u8], channels: usize) -> Vec<[u32; BINS]> {
 }
 
 pub fn title(app: &MaterialCraftApp) -> String {
-    let name = app.session.view2d_image().and_then(|(id, _)| app.session.graph().ok()?.node(id).ok().map(crate::graph_view::node_label));
+    let name = app.session.view2d_image().and_then(|(id, _)| app.session.graph().ok()?.node(id).ok().map(crate::graph::node_label));
     format!("{} - {}", name.unwrap_or_default(), tr("2D View"))
 }
 
@@ -223,7 +223,7 @@ fn draw_histogram(st: &mut View2dState, p: &egui::Painter, rect: Rect, key: u64,
 #[cfg(not(target_arch = "wasm32"))]
 fn save_image(app: &mut MaterialCraftApp) {
     let Some((id, img)) = app.session.view2d_image().map(|(id, i)| (id, i.clone())) else { return };
-    let name = app.session.graph().ok().and_then(|g| g.node(id).ok().map(crate::graph_view::node_label)).unwrap_or_else(|| "image".into());
+    let name = app.session.graph().ok().and_then(|g| g.node(id).ok().map(crate::graph::node_label)).unwrap_or_else(|| "image".into());
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(format!("{name}.png"))
         .add_filter("PNG", &["png"])

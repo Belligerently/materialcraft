@@ -9,7 +9,8 @@ use materialcraft_eval::{Cache, Cooked, Options};
 use materialcraft_image::Image;
 use serde::{Deserialize, Serialize};
 
-use crate::{EngineError, Result};
+use crate::snapshot::Snapshot;
+use crate::{AnnotationSelection, Clip, EngineError, Result};
 
 /// Undo keeps this many steps.
 const MAX_UNDO: usize = 200;
@@ -110,21 +111,6 @@ pub struct View2d {
     pub histogram: bool,
 }
 
-#[derive(Clone)]
-struct Snapshot {
-    pkg: Package,
-    graph: usize,
-    selection: Vec<NodeId>,
-    label: String,
-}
-
-/// Nodes and connections copied to the clipboard (as JSON, so other sessions can paste them).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Clip {
-    pub nodes: Vec<materialcraft_core::Node>,
-    pub connections: Vec<materialcraft_core::Connection>,
-}
-
 /// The prefix of warning lines in [`Session::log`].
 pub const WARNING_PREFIX: &str = "Warning: ";
 
@@ -135,6 +121,7 @@ pub struct Session {
     /// Index of the graph being edited.
     pub graph: usize,
     pub selection: Vec<NodeId>,
+    pub annotation_selection: Option<AnnotationSelection>,
     pub view2d: View2d,
     pub view3d: View3d,
     /// Cap on node output size while editing (`None` = full size).
@@ -168,6 +155,7 @@ impl Session {
             path: None,
             graph: 0,
             selection: Vec::new(),
+            annotation_selection: None,
             view2d: View2d { channel: "rgba".into(), ..View2d::default() },
             view3d: View3d::default(),
             preview_size: Some(512),
@@ -197,7 +185,13 @@ impl Session {
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { pkg: self.pkg.clone(), graph: self.graph, selection: self.selection.clone(), label: label.into() }
+        Snapshot {
+            pkg: self.pkg.clone(),
+            graph: self.graph,
+            selection: self.selection.clone(),
+            annotation_selection: self.annotation_selection,
+            label: label.into(),
+        }
     }
 
     /// Run `f` as one undoable step. On error the session is restored.
@@ -246,6 +240,7 @@ impl Session {
         self.pkg = s.pkg;
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
+        self.annotation_selection = s.annotation_selection;
     }
 
     /// Mark the document modified and in need of a cook.

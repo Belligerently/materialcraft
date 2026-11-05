@@ -1,0 +1,12 @@
+pub const COLOR_IMAGE: i64 = 1;
+pub const GRAY_IMAGE: i64 = 2;
+pub const BOOL: i64 = 4;
+pub const INT1: i64 = 16;
+pub const INT2: i64 = 32;
+pub const INT3: i64 = 64;
+pub const INT4: i64 = 128;
+pub const FLOAT1: i64 = 256;
+pub const FLOAT2: i64 = 512;
+pub const FLOAT3: i64 = 1024;
+pub const FLOAT4: i64 = 2048;
+pub const STRING: i64 = 16384;

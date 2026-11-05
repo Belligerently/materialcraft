@@ -226,7 +226,10 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
             match materialcraft_engine::execute(&mut app.session, id, &params) {
-                Ok(v) => ok(v),
+                Ok(v) => {
+                    app.close_subgraph_after(id);
+                    ok(v)
+                }
                 Err(e) => err(e),
             }
         }
@@ -240,8 +243,23 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
             ok(json!({
                 "state": app.ui,
                 "graphView": rect(app.graph.view),
+                "selection": app.session.selection,
+                "inspectedNode": app.graph.inspected_node,
+                "subgraph": app.pattern_editor.as_ref().filter(|_| crate::pattern::active(app))
+                    .map(|editor| json!({"kind": "pattern", "graph": editor.graph, "node": editor.node.0, "selection": editor.selection, "inspectedNode": editor.inspected_node}))
+                    .or_else(|| app.function_editor.as_ref().filter(|editor| matches!(editor.target, crate::function::FunctionTarget::Graph(_)))
+                        .map(|editor| json!({"kind": "function", "graph": app.session.graph, "selection": editor.selection, "inspectedNode": editor.inspected_node}))),
+                "annotationSelection": app.session.annotation_selection,
+                "frames": app.graph.frames.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
+                "comments": app.graph.comments.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
                 "nodes": app.graph.rects.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
-                "ports": app.graph.ports.iter().map(|h| json!({"node": h.node.0, "port": h.port, "output": h.output, "pos": [h.pos.x, h.pos.y]})).collect::<Vec<_>>(),
+                "ports": app.graph.ports.iter().map(|port| json!({
+                    "node": port.node.0,
+                    "port": port.port,
+                    "label": port.label,
+                    "output": port.output,
+                    "pos": [port.pos.x, port.pos.y],
+                })).collect::<Vec<_>>(),
                 "fps": app.fps,
                 "uiMs": app.ui_ms,
                 "cooking": app.cooker.busy(),
