@@ -156,6 +156,9 @@ pub struct Session {
     pub cooked: Cooked,
     /// Set when the graph changed and needs cooking.
     pub dirty: bool,
+    /// Bumped by every synchronous [`Session::cook`]; a background cook that started before the
+    /// bump holds stale results and must not replace `cooked`.
+    pub cook_epoch: u64,
     /// Cooked node outputs, shared with background cooks.
     pub cache: Arc<Mutex<Cache>>,
     /// A mesh loaded for the 3D view (`scene: "custom"`): its file name and geometry.
@@ -184,6 +187,7 @@ impl Session {
             clipboard: None,
             cooked: Cooked::default(),
             dirty: true,
+            cook_epoch: 0,
             cache: Arc::new(Mutex::new(Cache::default())),
             custom_mesh: None,
             undo: Vec::new(),
@@ -332,6 +336,7 @@ impl Session {
         opts.max_size = self.preview_size;
         self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
         self.dirty = false;
+        self.cook_epoch = self.cook_epoch.wrapping_add(1);
         &self.cooked
     }
 
@@ -410,3 +415,7 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session.test.rs"]
+mod tests;
