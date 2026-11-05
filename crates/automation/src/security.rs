@@ -63,7 +63,9 @@ pub fn server_token(port: u16) -> Result<(String, Option<PathBuf>), AutomationEr
     let token = generate_token()?;
     let path = token_file(port);
     let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
+    // Remove what is there first (a symlink is removed, not followed), then create exclusively.
+    let _ = std::fs::remove_file(&path);
+    o.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
     let res = o.open(&path).and_then(|mut f| std::io::Write::write_all(&mut f, token.as_bytes()));
@@ -147,6 +149,21 @@ mod tests {
         assert!(!token_matches(&a, "short"));
         assert!(client_token(1, Some("too short".into())).is_err());
         assert!(client_token(1, Some(format!(" {a}\n"))).is_ok());
+    }
+
+    /// A stale (or planted) file at the token path is replaced, never written through.
+    #[test]
+    fn the_token_file_replaces_a_stale_file() {
+        if std::env::var(TOKEN_ENV).is_ok() {
+            return;
+        }
+        let port = 59_871;
+        let path = token_file(port);
+        std::fs::write(&path, "stale contents").unwrap();
+        let (token, written) = server_token(port).unwrap();
+        assert_eq!(written.as_deref(), Some(path.as_path()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), token);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -2313,6 +2313,7 @@ dependencies = [
  "egui",
  "image",
  "log",
+ "materialcraft-automation",
  "materialcraft-engine",
  "materialcraft-ui-egui",
  "serde_json",

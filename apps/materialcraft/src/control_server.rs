@@ -14,27 +14,31 @@ use serde_json::{Value, json};
 /// Requests larger than this are rejected (screenshots go the other way).
 const MAX_REQUEST: u64 = 8 << 20;
 
-fn token(port: u16) -> String {
-    if let Ok(t) = std::env::var("MATERIALCRAFT_CONTROL_TOKEN")
-        && t.len() >= 16
-    {
-        return t;
+#[cfg(test)]
+#[path = "control_server.test.rs"]
+mod tests;
+
+/// The token comes from the OS random generator and is written owner-only (shared with the CLI's
+/// `serve`). Without a token the server does not start.
+fn token(port: u16) -> Option<String> {
+    match materialcraft_automation::security::server_token(port) {
+        Ok((token, path)) => {
+            if let Some(path) = path {
+                eprintln!("materialcraft: control token written to {}", path.display());
+            }
+            Some(token)
+        }
+        Err(e) => {
+            eprintln!("materialcraft: control server not started: {e}");
+            None
+        }
     }
-    use std::hash::{BuildHasher, Hasher};
-    let mut out = String::new();
-    for i in 0..4u64 {
-        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-        h.write_u64(i ^ u64::from(std::process::id()));
-        h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-        out.push_str(&format!("{:016x}", h.finish()));
-    }
-    let path = std::env::temp_dir().join(format!("materialcraft-control-{port}.token"));
-    if let Err(e) = std::fs::write(&path, &out) {
-        eprintln!("materialcraft: could not write the control token to {}: {e}", path.display());
-    } else {
-        eprintln!("materialcraft: control token written to {}", path.display());
-    }
-    out
+}
+
+/// Whether a first request authenticates: an `auth` call carrying exactly the server's token,
+/// compared without an early exit.
+fn auth_ok(token: &str, method: &str, params: &Value) -> bool {
+    method == "auth" && params.get("token").and_then(Value::as_str).is_some_and(|t| materialcraft_automation::security::token_matches(token, t))
 }
 
 pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
@@ -46,7 +50,7 @@ pub fn start(port: u16, ctx: egui::Context) -> Receiver<ControlRequest> {
             return rx;
         }
     };
-    let token = token(port);
+    let Some(token) = token(port) else { return rx };
     eprintln!("materialcraft: control server listening on 127.0.0.1:{port}");
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -90,7 +94,7 @@ fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
         let params = msg.get("params").cloned().unwrap_or(json!({}));
         let mut reply = if !authed {
-            let ok = method == "auth" && params.get("token").and_then(Value::as_str) == Some(token);
+            let ok = auth_ok(token, &method, &params);
             authed = ok;
             if ok { json!({"ok": true}) } else { json!({"ok": false, "error": "authenticate first: {\"method\":\"auth\",\"params\":{\"token\":…}}"}) }
         } else {
@@ -104,10 +108,8 @@ fn serve(stream: TcpStream, token: &str, tx: Sender<ControlRequest>, ctx: egui::
         if let Some(o) = reply.as_object_mut() {
             o.insert("id".into(), id);
         }
+        // A failed authentication closes the connection, so guesses cost a reconnect each.
         if writeln!(out, "{reply}").is_err() || out.flush().is_err() || !authed {
-            if !authed {
-                continue;
-            }
             break;
         }
     }
