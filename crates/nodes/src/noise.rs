@@ -42,10 +42,16 @@ fn wrapi(i: i32, p: i32) -> i32 {
 
 /// Value noise in 0..1, lattice period `p` cells (coordinates already scaled to cells).
 pub fn value(x: f32, y: f32, p: i32, seed: u32) -> f32 {
+    value_xy(x, y, p, p, seed)
+}
+
+/// Value noise in 0..1 with a separate lattice period per axis (`px`, `py` cells), so a noise
+/// stretched differently along x and y still tiles.
+pub fn value_xy(x: f32, y: f32, px: i32, py: i32, seed: u32) -> f32 {
     let (x0, y0) = (x.floor(), y.floor());
     let (tx, ty) = (fade(x - x0), fade(y - y0));
     let (ix, iy) = (x0 as i32, y0 as i32);
-    let r = |i: i32, j: i32| rand2(wrapi(i, p), wrapi(j, p), seed);
+    let r = |i: i32, j: i32| rand2(wrapi(i, px), wrapi(j, py), seed);
     let a = r(ix, iy) + (r(ix + 1, iy) - r(ix, iy)) * tx;
     let b = r(ix, iy + 1) + (r(ix + 1, iy + 1) - r(ix, iy + 1)) * tx;
     a + (b - a) * ty

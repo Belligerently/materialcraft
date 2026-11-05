@@ -3,7 +3,7 @@
 use materialcraft_image::{Image, Kind};
 
 use crate::catalog::{CookResult, Ctx, NodeDef, node};
-use crate::noise::{self, cellular, fbm, perlin, rand2, ridged, value};
+use crate::noise::{self, cellular, fbm, perlin, rand2, ridged, value, value_xy};
 use crate::ops;
 
 pub const NOISES: &str = "Texture generators/Noises";
@@ -173,8 +173,8 @@ fn anisotropic(ctx: &Ctx) -> CookResult {
     let smooth = ctx.f("smoothness");
     let s = ctx.seed;
     let base = ctx.gen_gray(|u, v| {
-        let a = value(u * sx, v * sy, sy as i32, s);
-        let b = value(u * sx * 2.0, v * sy, sy as i32, s ^ 77) * 0.5;
+        let a = value_xy(u * sx, v * sy, sx as i32, sy as i32, s);
+        let b = value_xy(u * sx * 2.0, v * sy, (sx * 2.0) as i32, sy as i32, s ^ 77) * 0.5;
         (a * 0.75 + b * 0.25 * (1.0 - smooth) + 0.125 * smooth).clamp(0.0, 1.0)
     });
     Ok(vec![if smooth > 0.0 { ops::gaussian(&base, smooth * 2.0, ctx.tile) } else { base }])
@@ -313,7 +313,9 @@ fn grunge2(ctx: &Ctx) -> CookResult {
 
 fn grunge3(ctx: &Ctx) -> CookResult {
     grunge(ctx, |u, v, sc, s| {
-        let streak = value(u * sc * 8.0, v * sc * 0.5, (sc * 8.0) as i32, s);
+        // Whole cell counts per axis (and the matching periods) so both edges tile.
+        let cy = (sc * 0.5).round().max(1.0);
+        let streak = value_xy(u * sc * 8.0, v * cy, (sc * 8.0) as i32, cy as i32, s);
         let a = fbm(u, v, sc, 6, 0.55, s ^ 2);
         streak * 0.5 + a * 0.5
     })
@@ -411,3 +413,7 @@ fn white_noise(ctx: &Ctx) -> CookResult {
         Image::gray(ctx.w, ctx.h, |x, y| rand2(x as i32, y as i32, s))
     }])
 }
+
+#[cfg(test)]
+#[path = "generators.test.rs"]
+mod tests;

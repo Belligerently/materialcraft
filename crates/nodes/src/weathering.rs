@@ -9,7 +9,7 @@ use rayon::prelude::*;
 use crate::catalog::{CookResult, Ctx, NodeDef, PortKind, node};
 use crate::fx_map::{BLENDS, Inst, splat};
 use crate::generators::NOISES;
-use crate::noise::{cellular, fbm, rand1, value};
+use crate::noise::{cellular, fbm, rand1, value, value_xy};
 use crate::noises_more::smoothstep;
 use crate::ops;
 use crate::patterns::PATTERNS;
@@ -267,7 +267,7 @@ fn leaks(ctx: &Ctx) -> CookResult {
     let run = Image::gray(ctx.w, ctx.h, |x, y| cols.get(x as usize).and_then(|c| c.get(y as usize)).copied().unwrap_or(0.0));
     Ok(vec![ctx.gen_gray(|u, v| {
         let dx = (fbm(u, v, 8.0, 3, 0.5, seed ^ 22) - 0.5) * wob * 0.04;
-        run.sample_gray(u + dx, v, ctx.tile) * (0.75 + 0.25 * value(u * streaks * 2.0, v * 3.0, (streaks * 2.0) as i32, seed ^ 25))
+        run.sample_gray(u + dx, v, ctx.tile) * (0.75 + 0.25 * value_xy(u * streaks * 2.0, v * 3.0, (streaks * 2.0) as i32, 3, seed ^ 25))
     })])
 }
 
@@ -294,3 +294,7 @@ fn edge_damage(ctx: &Ctx) -> CookResult {
     });
     Ok(vec![out, mask])
 }
+
+#[cfg(test)]
+#[path = "weathering.test.rs"]
+mod tests;
