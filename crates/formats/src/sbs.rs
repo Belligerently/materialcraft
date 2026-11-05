@@ -17,6 +17,9 @@ use roxmltree::Node as XmlNode;
 
 use crate::{FormatError, Result};
 
+#[path = "sbs_functions.rs"]
+mod functions;
+
 /// The SBS package extension.
 pub const SBS_EXT: &str = "sbs";
 
@@ -296,6 +299,10 @@ fn parse_ints(text: &str) -> Vec<i32> {
 /// The constant under `holder` (a `paramValue`, `defaultValue` or `constValue` element).
 fn sbs_constant(holder: XmlNode) -> Option<SbsValue> {
     let element = holder.children().find(|c| c.is_element())?;
+    sbs_constant_element(element)
+}
+
+fn sbs_constant_element(element: XmlNode) -> Option<SbsValue> {
     let text = element.attribute("v").unwrap_or("");
     let tag = element.tag_name().name();
 
@@ -578,8 +585,15 @@ pub fn read_sbs(bytes: &[u8], name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8
         _ if !file_stem.is_empty() => file_stem.to_string(),
         _ => "Untitled package".to_string(),
     };
-    let mut reader =
-        Reader { text, warnings: &mut warnings, dependencies: HashMap::new(), graph_names: HashMap::new(), resource_names: HashMap::new(), node_count: 0 };
+    let mut reader = Reader {
+        text,
+        warnings: &mut warnings,
+        dependencies: HashMap::new(),
+        graph_names: HashMap::new(),
+        resource_names: HashMap::new(),
+        node_count: 0,
+        function_variables: BTreeMap::new(),
+    };
     for dependency in child_element(root, "dependencies").into_iter().flat_map(|d| children_named(d, "dependency")) {
         if let (Some(uid), Some(file)) = (child_value(dependency, "uid"), child_value(dependency, "filename")) {
             reader.dependencies.insert(uid.to_string(), file.to_string());
@@ -687,6 +701,8 @@ struct Reader<'text, 'warnings> {
     /// Package path (`Resources/Bitmap`) → resource name.
     resource_names: HashMap<String, String>,
     node_count: usize,
+    /// Exposed numeric defaults of the graph currently being read.
+    function_variables: BTreeMap<String, Value>,
 }
 
 /// A node being read, as wires from the SBS data find it.
@@ -816,6 +832,7 @@ impl<'text> Reader<'text, '_> {
         }
 
         let image_inputs = self.read_graph_inputs(element, &mut graph);
+        self.function_variables = graph.exposed.iter().map(|p| (p.id.clone(), p.default.clone())).collect();
         let outputs = read_graph_outputs(element);
 
         let mut read_nodes: HashMap<String, ReadNode> = HashMap::new();
@@ -1106,7 +1123,8 @@ impl<'text> Reader<'text, '_> {
 
         // A parameter linked to a graph input is a function of one `get_*` node naming it
         let Some(dynamic) = child_element(param_value, "dynamicValue") else { return };
-        let function_nodes: Vec<XmlNode> = child_element(dynamic, "paramNodes").into_iter().flat_map(|p| children_named(p, "paramNode")).collect();
+        let function_nodes: Vec<XmlNode> =
+            child_element(dynamic, "paramNodes").into_iter().flat_map(|p| children_named(p, "paramNode")).take(functions::MAX_NODES + 1).collect();
         if let [only] = function_nodes.as_slice()
             && child_value(*only, "function").is_some_and(|f| f.starts_with("get_"))
             && let Some(input) = only.descendants().find(|c| c.tag_name().name() == "constantValueString").and_then(|c| c.attribute("v"))
@@ -1114,7 +1132,14 @@ impl<'text> Reader<'text, '_> {
             node.bindings.insert(id.to_string(), input.to_string());
             return;
         }
-        self.warnings.add(format!("graph `{graph_name}`: `{}` parameter `{id}` is driven by a function; imported its default", node.def));
+        match functions::read(dynamic, &self.function_variables, like) {
+            Ok(function) => {
+                node.functions.insert(id.to_string(), function);
+            }
+            Err(reason) => {
+                self.warnings.add(format!("graph `{graph_name}`: `{}` parameter `{id}` is driven by a function; imported its default ({reason})", node.def))
+            }
+        }
     }
 
     fn read_filter_params(&mut self, node: &mut Node, filter: &FilterMap, params: Option<XmlNode>, graph_name: &str) {
