@@ -1,15 +1,16 @@
 //! The graph editor: a pannable, zoomable canvas of node cards (colored header, live thumbnail,
 //! size label), bezier wires between typed ports, frames, comments and navigation pins.
 //!
-//! Gestures: left-drag a node to move it (the selection moves together), drag from a port to wire
-//! it (dropping on empty canvas opens the node search, wired), drag an input to unplug and re-route
-//! it, drag the empty canvas to box-select (Ctrl adds), middle-drag or Alt+drag to pan, wheel to
-//! zoom, click a node to show it in the 2D view (double-click a graph instance to open its graph),
+//! Gestures: left-drag a node to move it (the selection moves together), drag from an output to wire
+//! it (dropping on empty canvas opens the node search, wired), drag from an unconnected input to an
+//! output to wire it the other way, drag a connected input to unplug and re-route it, drag the empty
+//! canvas to box-select (Ctrl adds), middle-drag or Alt+drag to pan, wheel to zoom.
+//! Click a node to show it in the 2D view (double-click a graph instance to open its graph).
 //! Space, Tab or double-click the canvas for the node search, right-click for menus, drop library
-//! items to add them. Click a wire to select it (Shift or Ctrl+click adds more; Delete removes them, X swaps
-//! where they come from), drag a wire to pull a reroute dot out of it, double-click a wire to drop
-//! a dot there, right-click a wire for its menu. Every edit is an
-//! engine command; the gestures only draw previews until they commit.
+//! items to add them. Click a wire to select it (Shift or Ctrl+click adds more; Delete removes them,
+//! X swaps where they come from), drag a wire to pull a reroute dot out of it, double-click a wire
+//! to drop a dot there, right-click a wire for its menu. Every edit is an engine command; the
+//! gestures only draw previews until they commit.
 
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;
@@ -50,6 +51,10 @@ enum Drag {
         wire: WireRef,
         start: Pos2,
     },
+    WireFromInput {
+        to: (NodeId, String),
+    },
+
     Pan,
     Frame {
         id: u64,
@@ -724,6 +729,11 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
                 bezier(&painter, src.pos, p, Stroke::new(2.0, tk.accent));
             }
         }
+        Some(Drag::WireFromInput { to }) => {
+            if let (Some(p), Some(dst)) = (pointer, app.graph.ports.iter().find(|h| !h.output && h.node == to.0 && h.port == to.1)) {
+                bezier(&painter, p, dst.pos, Stroke::new(2.0, tk.accent));
+            }
+        }
         _ => {}
     }
 
@@ -813,6 +823,8 @@ fn handle_input(
                     app.graph.drag = Some(Drag::Wire { from: (h.node, h.port.clone()), detached: None });
                 } else if let Some(c) = app.session.graph().ok().and_then(|g| g.input_of(h.node, &h.port).cloned()) {
                     app.graph.drag = Some(Drag::Wire { from: (c.from, c.from_port.clone()), detached: Some((h.node, h.port.clone())) });
+                } else {
+                    app.graph.drag = Some(Drag::WireFromInput { to: (h.node, h.port.clone()) });
                 }
             } else if let Some((id, title, grip)) = frames.iter().find(|(_, t, g)| t.contains(p) || g.contains(p)) {
                 let resize = grip.contains(p) && !title.contains(p);
@@ -933,6 +945,12 @@ fn handle_input(
                             open_search(app, cam.to_graph(p), Some(from));
                         }
                     }
+                }
+            }
+            Drag::WireFromInput { to } => {
+                let source = pointer.and_then(|p| nearest_port(&app.graph.ports, p, 12.0)).filter(|h| h.output).cloned();
+                if let Some(s) = source {
+                    app.run("graph.connect", json!({"from": s.node.0, "fromPort": s.port, "to": to.0.0, "toPort": to.1}));
                 }
             }
             Drag::Frame { id, delta, resize, nodes } => {
@@ -1503,6 +1521,56 @@ mod tests {
         frame(&mut app, vec![key(egui::Key::Delete)], egui::Modifiers::NONE);
         assert!(app.session.graph().unwrap().connections.is_empty());
         assert!(app.graph.selected_wires.is_empty());
+    }
+
+    #[test]
+    fn wires_connect_when_dragged_from_either_end() {
+        let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::UiState::default());
+        app.run("file.new", json!({"template": "empty"}));
+        let id = |v: Option<serde_json::Value>| v.and_then(|v| v["id"].as_u64()).unwrap();
+        let noise = id(app.run("graph.node.add", json!({"def": "perlin_noise", "at": [0, 0]})));
+        let blend = id(app.run("graph.node.add", json!({"def": "blend", "at": [450, 0]})));
+        let ctx = egui::Context::default();
+        let frame = |app: &mut MaterialCraftApp, events: Vec<egui::Event>| {
+            ctx.run_ui(egui::RawInput { events, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 960.0))), ..Default::default() }, |ui| {
+                app.step(&ui.ctx().clone());
+                app.draw(ui);
+            })
+            .textures_delta
+            .clear();
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let port = |app: &MaterialCraftApp, node: u64, output: bool, name: &str| {
+            app.graph.ports.iter().find(|h| h.node.0 == node && h.output == output && h.port == name).map(|h| h.pos).unwrap()
+        };
+        let output = port(&app, noise, true, "output");
+        let foreground = port(&app, blend, false, "foreground");
+        let background = port(&app, blend, false, "background");
+        let empty = app.graph.view.left_top() + vec2(5.0, 5.0);
+        let drag = |app: &mut MaterialCraftApp, from: Pos2, to: Pos2| {
+            let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(app, vec![egui::Event::PointerMoved(from)]);
+            frame(app, vec![button(from, true)]);
+            frame(app, vec![egui::Event::PointerMoved(to)]);
+            frame(app, vec![button(to, false)]);
+        };
+        let source = |app: &MaterialCraftApp| app.session.graph().unwrap().input_of(NodeId(blend), "foreground").map(|c| (c.from.0, c.from_port.clone()));
+
+        // From the input: only an output finishes the wire, and a miss changes nothing.
+        drag(&mut app, foreground, empty);
+        assert_eq!(source(&app), None);
+        assert!(app.graph.search.is_none());
+        drag(&mut app, foreground, background);
+        assert_eq!(source(&app), None);
+        drag(&mut app, foreground, output);
+        assert_eq!(source(&app), Some((noise, "output".to_string())));
+
+        // From the output, as before.
+        app.run("graph.disconnect", json!({"to": blend, "toPort": "foreground"}));
+        drag(&mut app, output, foreground);
+        assert_eq!(source(&app), Some((noise, "output".to_string())));
     }
 
     #[test]
