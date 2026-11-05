@@ -50,7 +50,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             "Export outputs...",
             ["File"],
             Some("Ctrl+Shift+E"),
-            "{dir, format? (png|jpg|tga|tif|bmp|webp|exr|hdr), pattern? ($(graph)_$(identifier)), depth? (8|16|32), graph?} cooks the graph at full size and writes every output",
+            "{dir, format? (png|jpg|tga|tif|bmp|webp|exr|hdr), pattern? ($(graph)_$(identifier)), depth? (8|16|32), size? (px of the larger side, rounded down to a power of two, 16..8192; default the graph's size, keeping its proportions), graph?} cooks the graph at full size and writes every output",
             has_graph,
             export
         ),
@@ -265,9 +265,22 @@ pub struct Exported {
 }
 
 /// Cook graph `gi` at full size and encode every output (`pattern` names files).
-pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: Option<Depth>) -> Result<Vec<Exported>> {
-    let g = s.pkg.graph(gi)?;
-    let cooked = s.cook_full(gi);
+pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: Option<Depth>, size: Option<u32>) -> Result<Vec<Exported>> {
+    let mut pkg = s.pkg.clone();
+    if let Some(px) = size {
+        let g = pkg.graph_mut(gi)?;
+        // The larger side becomes `px`; the other keeps its proportion.
+        let target = 31 - px.clamp(16, 8192).leading_zeros();
+        let bounded = g.size.map(|l| l.clamp(4, 13));
+        let larger = bounded[0].max(bounded[1]);
+        g.size = bounded.map(|l| (l + target).saturating_sub(larger).max(4));
+    }
+    let g = pkg.graph(gi)?;
+    let dec = s.resource_decoder();
+    let cooked = {
+        let mut cache = s.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        materialcraft_eval::cook(&pkg, gi, &materialcraft_eval::Options::new(&dec), &mut cache)
+    };
     let mut out = Vec::new();
     for (id, usage, ident, img) in materialcraft_eval::outputs(g, &cooked) {
         let Some(img) = img else { continue };
@@ -283,8 +296,10 @@ pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: O
     Ok(out)
 }
 
-/// Export params: (graph index, extension, pattern, depth).
-pub fn export_params(s: &Session, p: &J) -> Result<(usize, String, String, Option<Depth>)> {
+/// Export params: (graph index, extension, pattern, depth, size).
+pub type ExportArgs = (usize, String, String, Option<Depth>, Option<u32>);
+
+pub fn export_params(s: &Session, p: &J) -> Result<ExportArgs> {
     let gi = u64p(p, "graph").map_or(s.graph, |g| g as usize);
     s.pkg.graph(gi)?;
     let ext = strp(p, "format").unwrap_or("png").trim_start_matches('.').to_ascii_lowercase();
@@ -299,14 +314,15 @@ pub fn export_params(s: &Session, p: &J) -> Result<(usize, String, String, Optio
         Some(32) => Some(Depth::F32),
         Some(d) => return Err(bad("file.export", format!("depth must be 8, 16 or 32, not {d}"))),
     };
-    Ok((gi, ext, pattern, depth))
+    let size = u64p(p, "size").filter(|&px| px > 0).map(|px| px.min(u64::from(u32::MAX)) as u32);
+    Ok((gi, ext, pattern, depth, size))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn export(s: &mut Session, p: &J) -> Result<J> {
     let dir = strp(p, "dir").ok_or_else(|| bad("file.export", "`dir` is required"))?;
-    let (gi, ext, pattern, depth) = export_params(s, p)?;
-    let files = export_outputs(s, gi, &ext, &pattern, depth)?;
+    let (gi, ext, pattern, depth, size) = export_params(s, p)?;
+    let files = export_outputs(s, gi, &ext, &pattern, depth, size)?;
     std::fs::create_dir_all(dir).map_err(|e| bad("file.export", format!("{dir}: {e}")))?;
     let mut written = Vec::new();
     for f in files {

@@ -83,7 +83,33 @@ fn package_save_and_open_round_trip() {
     let out = dir.join("tex");
     let r = run(&mut s, "file.export", json!({"dir": out.to_str().unwrap(), "format": "png", "depth": 8}));
     assert_eq!(r["files"].as_array().unwrap().len(), 6);
+    let small = dir.join("small");
+    run(&mut s, "file.export", json!({"dir": small.to_str().unwrap(), "format": "png", "depth": 8, "size": 64}));
+    let file = std::fs::read_dir(&small).unwrap().next().unwrap().unwrap().path();
+    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!((img.w, img.h), (64, 64));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `file.export` `size` is the larger side in pixels; 0 means the graph's size and the proportions are kept.
+#[test]
+fn export_size_keeps_proportions_and_clamps() {
+    let mut s = sample_session();
+    s.pkg.graphs[0].size = [7, 6];
+    let dims = |s: &Session, size: Value| {
+        let (gi, ext, pattern, depth, size) = materialcraft_engine::file_cmds::export_params(s, &json!({"size": size})).unwrap();
+        let files = materialcraft_engine::file_cmds::export_outputs(s, gi, &ext, &pattern, depth, size).unwrap();
+        files.iter().map(|f| materialcraft_formats::decode(&f.bytes).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
+    };
+    for size in [json!(0), json!(null)] {
+        assert!(dims(&s, size).iter().all(|d| *d == (128, 64)));
+    }
+    assert!(dims(&s, json!(32)).iter().all(|d| *d == (32, 16)));
+    let parsed = |size: Value| materialcraft_engine::file_cmds::export_params(&s, &json!({"size": size})).unwrap().4;
+    assert_eq!(parsed(json!(0)), None);
+    assert_eq!(parsed(json!(u64::MAX)), Some(u32::MAX));
+    s.pkg.graphs[0].size = [u32::MAX, u32::MAX];
+    assert!(dims(&s, json!(32)).iter().all(|d| *d == (32, 32)));
 }
 
 /// A scratch folder for one test, removed when dropped.
