@@ -24,6 +24,7 @@ pub(crate) fn defs() -> Vec<NodeDef> {
             .atomic()
             .generator()
             .resource("resource", "Bitmap resource")
+            .choice("colour_space", "Color space", &["sRGB", "Linear (data)"], 0)
             .color_out()
             .cook(bitmap),
         node("blend", "Blend", ATOMIC)
@@ -220,7 +221,9 @@ const CHANNEL_SOURCES: &[&str] =
 
 fn bitmap(ctx: &Ctx) -> CookResult {
     let name = ctx.text("resource");
-    match (ctx.resource)(name) {
+    // "Linear (data)" keeps the file's values as stored (normal maps, masks); sRGB decodes color.
+    let key = materialcraft_image::resource_key(name, ctx.i("colour_space") == 1);
+    match (ctx.resource)(&key) {
         Some(img) => Ok(vec![img.resize(ctx.w, ctx.h, ctx.tile)]),
         None if name.is_empty() => Ok(vec![ctx.gen_color(|u, v| {
             let c = if ((u * 8.0) as i32 + (v * 8.0) as i32) % 2 == 0 { 0.8 } else { 0.2 };

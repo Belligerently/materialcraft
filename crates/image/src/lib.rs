@@ -302,6 +302,29 @@ pub fn srgb_to_linear(v: f32) -> f32 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
 
+/// Encode the bitmap name and its requested color space without ambiguity.
+/// Plain sRGB names remain readable by simple resource callbacks.
+pub fn resource_key(name: &str, linear: bool) -> String {
+    if linear {
+        format!("\u{1}L{name}")
+    } else if name.starts_with('\u{1}') {
+        format!("\u{1}S{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Split a key made by [`resource_key`] into its name and data-map flag.
+pub fn split_resource_key(key: &str) -> (&str, bool) {
+    if let Some(name) = key.strip_prefix("\u{1}L") {
+        (name, true)
+    } else if let Some(name) = key.strip_prefix("\u{1}S") {
+        (name, false)
+    } else {
+        (key, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +336,15 @@ mod tests {
             for tile in [true, false] {
                 let p = img.sample(u, u, tile);
                 assert!(p.iter().all(|c| c.is_finite()));
+            }
+        }
+    }
+
+    #[test]
+    fn resource_keys_round_trip() {
+        for name in ["n", "", "\u{1}Lnormal", "\u{1}Sn", "n\u{1}linear"] {
+            for linear in [false, true] {
+                assert_eq!(split_resource_key(&resource_key(name, linear)), (name, linear));
             }
         }
     }

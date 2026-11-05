@@ -171,9 +171,10 @@ pub fn safe_file_name(name: &str) -> String {
     if cleaned.is_empty() { "resource".into() } else { cleaned }
 }
 
-/// Decode image file bytes into a linear float image (8-bit color is sRGB-decoded; grayscale
-/// files stay grayscale).
-pub fn decode(bytes: &[u8]) -> Result<Image> {
+/// Decode image file bytes into a float image. 8/16-bit color is sRGB-decoded to linear, unless
+/// `linear` is set (a data map such as a normal map: the file's values are kept as stored);
+/// float files and grayscale files are never converted.
+pub fn decode(bytes: &[u8], linear: bool) -> Result<Image> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| FormatError::Image(e.to_string()))?;
     if reader.format().is_none() {
         // TGA has no signature: try it when the format cannot be guessed.
@@ -205,7 +206,7 @@ pub fn decode(bytes: &[u8]) -> Result<Image> {
         return Ok(Image { w, h, kind: Kind::Gray, data: Arc::new(data) });
     }
     let mut data = img.into_rgba32f().into_raw();
-    if !float {
+    if !(float || linear) {
         for px in data.chunks_exact_mut(4) {
             for c in px.iter_mut().take(3) {
                 *c = srgb_to_linear(*c);
@@ -340,7 +341,7 @@ mod tests {
         let q = load_package(&bytes).unwrap();
         assert_eq!(q.graphs, p.graphs);
         assert_eq!(q.resources[0].bytes, p.resources[0].bytes);
-        let img = decode(q.resources[0].bytes.as_slice()).unwrap();
+        let img = decode(q.resources[0].bytes.as_slice(), false).unwrap();
         assert!((img.get(0, 0, false)[1] - 0.5).abs() < 0.01);
         assert!(load_package(b"not a zip").is_err());
     }
@@ -413,13 +414,23 @@ mod tests {
             for depth in [Depth::U8, Depth::U16, Depth::F32] {
                 for i in [&img, &gray] {
                     let b = encode(i, ext, depth, true).unwrap_or_else(|e| panic!("{ext}: {e}"));
-                    let back = decode(&b).unwrap_or_else(|e| panic!("{ext} decode: {e}"));
+                    let back = decode(&b, false).unwrap_or_else(|e| panic!("{ext} decode: {e}"));
                     assert_eq!((back.w, back.h), (8, 8));
                 }
             }
         }
         let png16 = encode(&gray, "png", Depth::U16, false).unwrap();
-        assert!((decode(&png16).unwrap().get(7, 0, false)[0] - gray.get(7, 0, false)[0]).abs() < 1e-3);
+        assert!((decode(&png16, false).unwrap().get(7, 0, false)[0] - gray.get(7, 0, false)[0]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn linear_decode_keeps_data_map_values() {
+        let normal = Image::filled(2, 2, Kind::Color, [0.5, 0.5, 1.0, 1.0]);
+        let png = encode(&normal, "png", Depth::U8, false).unwrap();
+        let data = decode(&png, true).unwrap();
+        assert!((data.get(0, 0, false)[0] - 0.5).abs() < 0.01);
+        let color = decode(&png, false).unwrap();
+        assert!((color.get(0, 0, false)[0] - 0.214).abs() < 0.01);
     }
 
     #[test]
@@ -480,7 +491,7 @@ mod tests {
     fn oversized_images_are_refused_before_decoding() {
         let mut png = Cursor::new(Vec::new());
         image::GrayImage::new(8193, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let err = decode(png.get_ref()).unwrap_err().to_string();
+        let err = decode(png.get_ref(), false).unwrap_err().to_string();
         assert!(err.contains("8192"), "{err}");
     }
 
@@ -488,7 +499,7 @@ mod tests {
     fn tga_still_decodes() {
         let mut tga = Cursor::new(Vec::new());
         image::RgbaImage::new(2, 2).write_to(&mut tga, image::ImageFormat::Tga).unwrap();
-        let img = decode(tga.get_ref()).unwrap();
+        let img = decode(tga.get_ref(), false).unwrap();
         assert_eq!((img.w, img.h, img.kind), (2, 2, Kind::Color));
     }
 
@@ -496,7 +507,7 @@ mod tests {
     fn decode_matches_previous_values() {
         let mut png = Cursor::new(Vec::new());
         image::RgbImage::from_pixel(2, 2, image::Rgb([128, 128, 128])).write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let img = decode(png.get_ref()).unwrap();
+        let img = decode(png.get_ref(), false).unwrap();
         let want = srgb_to_linear(128.0 / 255.0);
         assert!((img.get(1, 1, false)[0] - want).abs() < 1e-4);
     }
