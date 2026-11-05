@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 #[cfg(test)]
 #[path = "control_server.test.rs"]
-mod auth_tests;
+mod exact_token_tests;
 
 fn auth_ok(token: &str, method: &str, params: &Value) -> bool {
     method == "auth" && params.get("token").and_then(Value::as_str).is_some_and(|t| token_matches(token, t))
