@@ -358,7 +358,7 @@ fn parent_size(app: &mut MaterialCraftApp, ui: &mut Ui) {
 }
 
 fn view_center(app: &MaterialCraftApp) -> Pos2 {
-    let c = &app.ui.graph_camera;
+    let c = &app.ui.graph_camera.sanitized();
     let v = app.graph.view;
     pos2(c.pan[0] + v.width() * 0.5 / c.zoom, c.pan[1] + v.height() * 0.5 / c.zoom)
 }
@@ -419,7 +419,8 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let painter = ui.painter_at(rect);
     // Background and grid.
     painter.rect_filled(rect, 0.0, Color32::from_rgb(0x2b, 0x2d, 0x31));
-    let cam = Cam { origin: rect.min, pan: Vec2::from(app.ui.graph_camera.pan), zoom: app.ui.graph_camera.zoom.clamp(0.08, 4.0) };
+    app.ui.graph_camera = app.ui.graph_camera.sanitized();
+    let cam = Cam { origin: rect.min, pan: Vec2::from(app.ui.graph_camera.pan), zoom: app.ui.graph_camera.zoom };
     grid(&painter, &cam, rect);
 
     let pointer = ctx.input(|i| i.pointer.hover_pos());

@@ -136,6 +136,7 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let p = ui.painter_at(rect);
     p.rect_filled(rect, 0.0, tk.viewport);
     // Camera: fit, wheel zoom around the pointer, drag to pan.
+    app.ui.image_camera = app.ui.image_camera.sanitized();
     let cam = &mut app.ui.image_camera;
     let tiles = if app.session.view2d.tiled { 3.0 } else { 1.0 };
     let fit_zoom = ((rect.width() - 16.0) / (img.w as f32 * tiles)).min((rect.height() - 16.0) / (img.h as f32 * tiles)).max(0.01);
