@@ -284,7 +284,7 @@ pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: O
     for (id, usage, ident, img) in materialcraft_eval::outputs(g, &cooked) {
         let Some(img) = img else { continue };
         let file = format!("{}.{}", output_name(pattern, &g.name, &ident, usage), ext.trim_start_matches('.'));
-        if !names.insert(file.clone()) {
+        if !names.insert(file.to_lowercase()) {
             return Err(bad("file.export", format!("duplicate export filename `{file}`: use unique output identifiers or a different filename pattern")));
         }
         let node = g.node(id)?;
