@@ -73,7 +73,7 @@ impl GraphCamera {
     /// hold a zoom of 0 or NaN, which the view divides by).
     pub fn sanitized(self) -> GraphCamera {
         let d = GraphCamera::default();
-        let pan = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let pan = |v: f32, d: f32| if v.is_finite() { v.clamp(-1.0e9, 1.0e9) } else { d };
         let zoom = if self.zoom.is_finite() { self.zoom.clamp(Self::ZOOM.0, Self::ZOOM.1) } else { d.zoom };
         GraphCamera { pan: [pan(self.pan[0], d.pan[0]), pan(self.pan[1], d.pan[1])], zoom }
     }
@@ -99,7 +99,7 @@ impl ImageCamera {
 
     /// The camera with a finite offset and a zoom inside [`Self::ZOOM`].
     pub fn sanitized(self) -> ImageCamera {
-        let off = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let off = |v: f32| if v.is_finite() { v.clamp(-1.0e9, 1.0e9) } else { 0.0 };
         let zoom = if self.zoom.is_finite() { self.zoom.clamp(Self::ZOOM.0, Self::ZOOM.1) } else { 1.0 };
         ImageCamera { zoom, offset: [off(self.offset[0]), off(self.offset[1])], fit: self.fit }
     }
@@ -176,6 +176,14 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cameras_bound_huge_finite_offsets_before_screen_math() {
+        let g = GraphCamera { pan: [f32::MAX, f32::MIN], zoom: 4.0 }.sanitized();
+        assert!(g.pan.iter().all(|v| (v * g.zoom).is_finite() && v.abs() <= 1.0e9));
+        let i = ImageCamera { offset: [f32::MAX, f32::MIN], zoom: 64.0, fit: false }.sanitized();
+        assert!(i.offset.iter().all(|v| (v * i.zoom).is_finite() && v.abs() <= 1.0e9));
+    }
 
     #[test]
     fn cameras_sanitize_zero_and_non_finite_zoom() {
