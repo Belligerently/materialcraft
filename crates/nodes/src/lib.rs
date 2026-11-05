@@ -145,4 +145,37 @@ mod tests {
         assert!((atomic::levels_fn(0.5, 0.0, 0.5, 1.0, 0.0, 1.0) - 0.5).abs() < 1e-5);
         assert_eq!(atomic::levels_fn(0.2, 0.4, 0.5, 0.8, 0.0, 1.0), 0.0);
     }
+
+    /// Cook one node with a single overridden parameter on a `size`-square noise input.
+    fn cook_with(id: &str, key: &str, value: materialcraft_core::Value, size: u32) -> Image {
+        let def = find(id).unwrap();
+        let mut over = BTreeMap::new();
+        over.insert(key.to_string(), value);
+        let params = resolve_params(def, &over);
+        let no_res = |_: &str| None;
+        let vars = BTreeMap::new();
+        let img = Image::generate(size, size, Kind::Gray, |x, y| [((x * 7 + y * 13) % 17) as f32 / 16.0, 0.0, 0.0, 1.0]);
+        let inputs = [Some(img)];
+        let ctx = Ctx { w: size, h: size, seed: 7, tile: true, inputs: &inputs, params: &params, resource: &no_res, vars: &vars };
+        (def.cook)(&ctx).unwrap().remove(0)
+    }
+
+    /// A hostile blur intensity must return promptly (it used to loop for ~i64::MAX passes).
+    #[test]
+    fn anisotropic_blur_hostile_intensity_is_bounded() {
+        let t = std::time::Instant::now();
+        let out = cook_with("anisotropic_blur", "intensity", materialcraft_core::Value::Float(1e15), 64);
+        assert!(out.data.iter().all(|v| v.is_finite()));
+        assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
+    }
+
+    /// Large-but-legal intensity stays close to the Gaussian it approximates.
+    #[test]
+    fn anisotropic_blur_matches_horizontal_gaussian() {
+        let img = Image::generate(128, 128, Kind::Gray, |x, y| [((x * 7 + y * 13) % 17) as f32 / 16.0, 0.0, 0.0, 1.0]);
+        let out = cook_with("anisotropic_blur", "intensity", materialcraft_core::Value::Float(8.0), 128);
+        // Mean is preserved by a normalised blur on a tiling image.
+        let mean = |i: &Image| (0..128 * 128).map(|k| i.data[k]).sum::<f32>() / (128.0 * 128.0);
+        assert!((mean(&out) - mean(&img)).abs() < 0.02);
+    }
 }
