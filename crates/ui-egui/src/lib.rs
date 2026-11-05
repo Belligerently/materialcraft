@@ -226,7 +226,8 @@ impl MaterialCraftApp {
             self.styled = Some(style);
         }
         let scale = self.ui.prefs.ui_scale.clamp(0.5, 3.0);
-        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
+        // Rescaling during a drag moves the control under the pointer and feeds back into its value.
+        if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|i| i.pointer.any_down()) {
             ctx.set_zoom_factor(scale);
         }
         control::poll(self, ctx);

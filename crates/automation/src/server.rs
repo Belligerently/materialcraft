@@ -154,9 +154,28 @@ pub struct ExportParams {
     /// 8, 16 or 32 bits (default: the graph's output format).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    /// Pixels of the larger side, rounded down to a power of two, 16 to 8192 (default: the graph's size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
     /// Graph index (default: the open graph).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct MaterialExportParams {
+    /// Forward-slash path relative to the write root (`.mcmat` is appended if missing). The
+    /// parent folder must exist.
+    pub path: String,
+    /// Graph index (default: the open graph).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<u32>,
+    /// Square size in pixels, rounded to a power of two from 16 to 8192 (default: the graph's size).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+    /// Exposed input values to cook with and embed, by input id (see `session_inspect`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Value>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, JsonSchema)]
@@ -189,11 +208,10 @@ pub struct RenderParams {
     /// 3D: UV repeats of the material on the scene for this render only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiling: Option<f32>,
-    /// 3D beauty render: real displacement from the height output, ambient occlusion and a
-    /// shadowed key light (slower).
+    /// 3D beauty render: a finer displaced mesh, ambient occlusion and a shadowed key light (slower).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq: Option<bool>,
-    /// With `hq`: displacement depth in scene radii (default 0.04).
+    /// With `hq`: displacement depth in scene radii (default: the view's height depth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displacement: Option<f32>,
 }
@@ -305,7 +323,7 @@ impl MaterialcraftMcp {
                     b.call(method, p).await
                 }
                 "package.save" if p.get("path").is_none() => b.call("ui.menu.invoke", json!({"id": "file.save"})).await,
-                "package.save" | "package.open" | "bitmap.import" | "outputs.export" | "command.batch" | "render" => {
+                "package.save" | "package.open" | "bitmap.import" | "outputs.export" | "material.export" | "command.batch" | "render" => {
                     Err(bad(format!("`{method}` with paths works in headless mode only: the running app reads and writes its own files (use ui_menu_invoke)")))
                 }
                 _ => b.call(method, p).await,
@@ -430,6 +448,13 @@ impl MaterialcraftMcp {
         to_result(self.call("outputs.export", params(&p)).await)
     }
 
+    #[tool(description = "Cook a graph at full size and write it as a portable .mcmat material (cooked maps, exposed inputs, \
+        source package) to a path relative to the write root, for TextureCraft. Optional graph, size and exposed input values. \
+        Returns {path, bytes}.")]
+    async fn material_export(&self, Parameters(p): Parameters<MaterialExportParams>) -> Result<CallToolResult, McpError> {
+        to_result(self.call("material.export", params(&p)).await)
+    }
+
     #[tool(description = "Headless: render the material on the 3D view's scene, or a node's output (view 2d), as a PNG up to \
         2048 px a side. In bridge mode use view_screenshot.")]
     async fn view_render(&self, Parameters(p): Parameters<RenderParams>) -> Result<CallToolResult, McpError> {
@@ -471,7 +496,7 @@ impl MaterialcraftMcp {
         (usages baseColor, normal, roughness, metallic, height, ambientOcclusion) make a PBR material. Start with graph_new \
         (templates: pbr, bricks, wood, …) or package_open, browse nodes with library_list, build with node_add / node_connect \
         / node_param (or command_run/command_batch for anything else: command_list), check your work with session_inspect and \
-        view_render (3d, or 2d for one node), then package_save and outputs_export. Undo: command_run edit.undo."
+        view_render (3d, or 2d for one node), then package_save, outputs_export or material_export (.mcmat for TextureCraft). Undo: command_run edit.undo."
 )]
 impl ServerHandler for MaterialcraftMcp {}
 
@@ -491,6 +516,25 @@ mod tests {
         })
         .await;
         assert!(mcp.call("session.inspect", json!({})).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn material_export_tool_writes_through_the_workspace_only() {
+        let base = std::env::temp_dir().join(format!("mc-mcp-{}-material", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let args = || Parameters(MaterialExportParams { path: "m".into(), graph: None, size: Some(16), values: None });
+
+        let denied = MaterialcraftMcp::headless(Headless::new(materialcraft_engine::sample_session(), Filesystem::Denied));
+        assert_eq!(denied.material_export(args()).await.unwrap().is_error, Some(true));
+
+        let ws = crate::AuthorizedWorkspace::new(None, Some(&base)).unwrap();
+        let mcp = MaterialcraftMcp::headless(Headless::new(materialcraft_engine::sample_session(), Filesystem::Workspace(ws)));
+        assert_eq!(mcp.material_export(args()).await.unwrap().is_error, Some(false));
+        assert!(base.join("m.mcmat").is_file());
+        let escape = Parameters(MaterialExportParams { path: "../m.mcmat".into(), graph: None, size: Some(16), values: None });
+        assert_eq!(mcp.material_export(escape).await.unwrap().is_error, Some(true));
+        assert!(!base.parent().unwrap().join("m.mcmat").exists());
     }
 
     #[test]

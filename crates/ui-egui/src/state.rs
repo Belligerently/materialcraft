@@ -108,6 +108,8 @@ pub struct UiState {
     pub export_dir: String,
     pub export_format: String,
     pub export_depth: u32,
+    /// Export size in pixels; 0 = the graph's own size.
+    pub export_size: u32,
     pub export_pattern: String,
     /// Frame the whole graph on the next frame.
     #[serde(skip)]
@@ -131,6 +133,7 @@ impl Default for UiState {
             export_dir: String::new(),
             export_format: "png".into(),
             export_depth: 0,
+            export_size: 0,
             export_pattern: "$(graph)_$(identifier)".into(),
             frame_all: true,
         }

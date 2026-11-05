@@ -10,6 +10,9 @@ use crate::MaterialCraftApp;
 #[derive(Default)]
 pub struct Cooker {
     rx: Option<Receiver<Cooked>>,
+    /// Stops the running cook between nodes once its result is stale.
+    #[cfg(not(target_arch = "wasm32"))]
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// When the running cook started (app seconds).
     pub started: Option<f64>,
     /// `Session::cook_epoch` when the running cook started.
@@ -27,14 +30,31 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if let Some(rx) = &app.cooker.rx {
         match rx.try_recv() {
             Ok(c) => {
-                // A synchronous cook (e.g. `session.inspect`) since this one started is newer:
-                // its results stand and this stale snapshot is dropped.
-                if app.cooker.epoch == app.session.cook_epoch {
+                if c.cancelled {
+                    // A stopped cook is partial: keep the previous results and cook again.
+                    app.session.dirty = true;
+                } else if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                    // (A synchronous cook, e.g. `session.inspect`, since this one started is newer:
+                    // its results stand and this stale snapshot is dropped.)
                     app.session.cooked = c;
                 }
                 app.cooker.rx = None;
                 app.cooker.started = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.cooker.cancel = None;
+                }
                 ctx.request_repaint();
+            }
+            Err(TryRecvError::Empty) if app.session.dirty => {
+                // Stop between nodes, but wait for this worker to finish before starting
+                // another. A slow node must not accumulate workers during rapid edits.
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(flag) = &app.cooker.cancel {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                return;
             }
             Err(TryRecvError::Empty) => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -43,6 +63,10 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             Err(TryRecvError::Disconnected) => {
                 app.cooker.rx = None;
                 app.cooker.started = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.cooker.cancel = None;
+                }
             }
         }
     }
@@ -62,21 +86,21 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     let epoch = s.cook_epoch;
     let dec = s.resource_decoder();
     let (tx, rx) = std::sync::mpsc::channel();
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let thread_flag = flag.clone();
     use materialcraft_engine::eval::Options;
-    use std::sync::PoisonError;
     let spawned = std::thread::Builder::new().name("materialcraft-cook".into()).spawn(move || {
         let mut opts = Options::new(&dec);
         opts.max_size = max;
-        let cooked = {
-            let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-            materialcraft_engine::eval::cook(&pkg, gi, &opts, &mut cache)
-        };
+        opts.cancel = Some(&thread_flag);
+        let cooked = materialcraft_engine::eval::cook(&pkg, gi, &opts, &cache);
         let _ = tx.send(cooked);
     });
     match spawned {
         Ok(_) => {
             app.cooker.rx = Some(rx);
             app.cooker.epoch = epoch;
+            app.cooker.cancel = Some(flag);
             app.cooker.started = Some(now);
         }
         Err(e) => {
@@ -95,3 +119,7 @@ fn start(app: &mut MaterialCraftApp, _now: f64) {
 #[cfg(test)]
 #[path = "cook.test.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "cook_cancellation.test.rs"]
+mod cancellation_tests;
