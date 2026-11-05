@@ -31,21 +31,26 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                 if c.cancelled {
                     // A stopped cook is partial: keep the previous results and cook again.
                     app.session.dirty = true;
-                } else {
+                } else if !app.session.dirty {
                     app.session.cooked = c;
                 }
                 app.cooker.rx = None;
                 app.cooker.started = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.cooker.cancel = None;
+                }
                 ctx.request_repaint();
             }
             Err(TryRecvError::Empty) if app.session.dirty => {
-                // The running cook is stale: stop it, ignore its result and cook the new state.
+                // Stop between nodes, but wait for this worker to finish before starting
+                // another. A slow node must not accumulate workers during rapid edits.
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(flag) = &app.cooker.cancel {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-                app.cooker.rx = None;
-                app.cooker.started = None;
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                return;
             }
             Err(TryRecvError::Empty) => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -54,6 +59,10 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             Err(TryRecvError::Disconnected) => {
                 app.cooker.rx = None;
                 app.cooker.started = None;
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.cooker.cancel = None;
+                }
             }
         }
     }
@@ -100,3 +109,7 @@ fn start(app: &mut MaterialCraftApp, _now: f64) {
     // shortcut: no threads on the web; the cook runs on the UI thread (the page pauses).
     app.session.cook();
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "cook_cancellation.test.rs"]
+mod cancellation_tests;
