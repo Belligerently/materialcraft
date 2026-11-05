@@ -12,6 +12,8 @@ pub struct Cooker {
     rx: Option<Receiver<Cooked>>,
     /// When the running cook started (app seconds).
     pub started: Option<f64>,
+    /// `Session::cook_epoch` when the running cook started.
+    epoch: u64,
 }
 
 impl Cooker {
@@ -25,7 +27,11 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if let Some(rx) = &app.cooker.rx {
         match rx.try_recv() {
             Ok(c) => {
-                app.session.cooked = c;
+                // A synchronous cook (e.g. `session.inspect`) since this one started is newer:
+                // its results stand and this stale snapshot is dropped.
+                if app.cooker.epoch == app.session.cook_epoch {
+                    app.session.cooked = c;
+                }
                 app.cooker.rx = None;
                 app.cooker.started = None;
                 ctx.request_repaint();
@@ -53,6 +59,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     let pkg = s.pkg.clone();
     let (gi, max) = (s.graph, s.preview_size);
     let cache = s.cache.clone();
+    let epoch = s.cook_epoch;
     let dec = s.resource_decoder();
     let (tx, rx) = std::sync::mpsc::channel();
     use materialcraft_engine::eval::Options;
@@ -69,6 +76,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     match spawned {
         Ok(_) => {
             app.cooker.rx = Some(rx);
+            app.cooker.epoch = epoch;
             app.cooker.started = Some(now);
         }
         Err(e) => {
@@ -83,3 +91,7 @@ fn start(app: &mut MaterialCraftApp, _now: f64) {
     // shortcut: no threads on the web; the cook runs on the UI thread (the page pauses).
     app.session.cook();
 }
+
+#[cfg(test)]
+#[path = "cook.test.rs"]
+mod tests;
