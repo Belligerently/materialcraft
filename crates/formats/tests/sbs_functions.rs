@@ -56,7 +56,7 @@ fn imports_vector_constants_and_unary_operations() {
 #[test]
 fn invalid_or_unsupported_expressions_warn_and_keep_defaults() {
     let valid = xml(&expression(), "99999999999", "blur", "intensity");
-    for text in [
+    for (case, text) in [
         valid.replace("rootnode v=\"99999999999\"", "rootnode v=\"missing\""),
         valid.replace("function v=\"sub\"", "function v=\"while\""),
         valid.replace("connRef v=\"2\"", "connRef v=\"missing\""),
@@ -70,9 +70,12 @@ fn invalid_or_unsupported_expressions_warn_and_keep_defaults() {
         valid.replace("function v=\"sub\"", "function v=\"sub\"/><type v=\"16\""),
         valid.replace(&wire("b", "2"), ""),
         xml(&node("1", "const_float2", r#"<constantValueFloat2 v="1 2"/>"#, ""), "1", "blur", "intensity"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let report = read(&text);
-        assert!(report.pkg.graphs[0].nodes[0].functions.is_empty(), "{text}");
+        assert!(report.pkg.graphs[0].nodes[0].functions.is_empty(), "case {case}: unsupported expression was imported");
         assert!(report.warnings.iter().any(|w| w.contains("imported its default")), "{:?}", report.warnings);
     }
 }
