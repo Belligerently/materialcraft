@@ -94,14 +94,27 @@ pub fn safe_file_name(name: &str) -> String {
 /// Decode image file bytes into a linear float image (8-bit color is sRGB-decoded; grayscale
 /// files stay grayscale).
 pub fn decode(bytes: &[u8]) -> Result<Image> {
-    // TGA has no signature: try it when the format cannot be guessed.
-    let img = image::load_from_memory(bytes)
-        .or_else(|e| image::load_from_memory_with_format(bytes, image::ImageFormat::Tga).map_err(|_| e))
-        .map_err(|e| FormatError::Image(e.to_string()))?;
-    let (w, h) = (img.width(), img.height());
+    let img_err = |e: image::ImageError| FormatError::Image(e.to_string());
+    // TGA has no signature: assume it when the format cannot be guessed.
+    let open = || -> Result<image::ImageReader<Cursor<&[u8]>>> {
+        let mut r = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| FormatError::Image(e.to_string()))?;
+        if r.format().is_none() {
+            r.set_format(image::ImageFormat::Tga);
+        }
+        Ok(r)
+    };
+    // Read the size from the header first, so an oversized image is refused before any pixels
+    // are allocated or decoded.
+    let (w, h) = open()?.into_dimensions().map_err(img_err)?;
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return Err(FormatError::Image(format!("{w}x{h} is outside 1..={MAX_SIDE} pixels")));
     }
+    let mut reader = open()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SIDE);
+    limits.max_image_height = Some(MAX_SIDE);
+    reader.limits(limits);
+    let img = reader.decode().map_err(img_err)?;
     let gray = matches!(img.color(), image::ColorType::L8 | image::ColorType::L16 | image::ColorType::La8 | image::ColorType::La16);
     let float = matches!(img.color(), image::ColorType::Rgb32F | image::ColorType::Rgba32F);
     if gray {
@@ -218,8 +231,22 @@ pub fn output_name(pattern: &str, graph: &str, identifier: &str, usage: &str) ->
 /// a truncated file behind.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("out")));
-    std::fs::write(&tmp, bytes).map_err(|e| FormatError::Io(format!("{}: {e}", tmp.display())))?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // A temp name unique per process and call, so two saves of one path never share a file.
+    let unique = format!(".{}.{}.tmp", std::process::id(), COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "out".into());
+    name.push(unique);
+    let tmp = path.with_file_name(name);
+    let write = |tmp: &std::path::Path| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(tmp)?;
+        f.write_all(bytes)?;
+        // The data must be on disk before the rename publishes it.
+        f.sync_all()
+    };
+    if let Err(e) = write(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(FormatError::Io(format!("{}: {e}", tmp.display())));
+    }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         FormatError::Io(format!("{}: {e}", path.display()))
@@ -265,6 +292,54 @@ mod tests {
         }
         let png16 = encode(&gray, "png", Depth::U16, false).unwrap();
         assert!((decode(&png16).unwrap().get(7, 0, false)[0] - gray.get(7, 0, false)[0]).abs() < 1e-3);
+    }
+
+    /// A valid 1-bit grayscale PNG of `side` x `side` zero pixels (a few hundred KB when deflated).
+    fn blank_png(side: u32) -> Vec<u8> {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend((data.len() as u32).to_be_bytes());
+            out.extend(kind);
+            out.extend(data);
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend(crc.sum().to_be_bytes());
+        }
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        let row = vec![0u8; 1 + (side as usize).div_ceil(8)];
+        for _ in 0..side {
+            z.write_all(&row).unwrap();
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend([1, 0, 0, 0, 0]);
+        let mut png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'].to_vec();
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &z.finish().unwrap());
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    #[test]
+    fn oversized_images_are_rejected_from_the_header_before_decoding() {
+        // 30000 x 30000 is 900 MB as 8-bit gray: the size message (not an allocation failure
+        // from the decoder) proves the header was checked before any pixels were decoded.
+        let e = decode(&blank_png(30_000)).unwrap_err().to_string();
+        assert!(e.contains("pixels"), "{e}");
+        assert!(decode(&blank_png(64)).is_ok());
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_temp_file_and_overwrites() {
+        let dir = std::env::temp_dir().join(format!("mc-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.mcraft");
+        write_atomic(&path, b"one").unwrap();
+        write_atomic(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
