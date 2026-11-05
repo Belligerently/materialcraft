@@ -131,15 +131,19 @@ impl MaterialCraftApp {
         }
         let p = if self.ui.prefs.preview_size == 0 { None } else { Some(self.ui.prefs.preview_size.clamp(64, 8192)) };
         if self.session.preview_size != p {
-            self.session.preview_size = p;
-            self.session.dirty = true;
+            self.run("view.previewSize", serde_json::json!({"size": p.unwrap_or(0)}));
         }
     }
 
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         match cook::execute_guarded(&mut self.session, id, &params) {
-            Ok(v) => Some(v),
+            Ok(v) => {
+                if id == "view.previewSize" {
+                    self.ui.prefs.preview_size = self.session.preview_size.unwrap_or(0);
+                }
+                Some(v)
+            }
             Err(e) => {
                 self.toast(e, true);
                 None

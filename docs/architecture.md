@@ -47,6 +47,14 @@ offset by powers of two or set absolutely. While editing, outputs are capped at 
 (512 px by default), with pixel-based parameters scaled by `w / 256` so previews and full-size
 exports look the same. Exports cook at full size through the same cache.
 
+The 2D toolbar and the 3D view's Display menu expose the shared preview limit (256, 512, 1024,
+2048 or 4096 px, or Full size). This is a cap, so a 4K preview requires a graph/node configured
+for 4096 px or larger. Both controls run `view.previewSize` and persist the choice in preferences;
+control-channel calls to the same command also retain their size across UI frames. The 3D view
+uses those cooked maps, while its rendered frame follows the panel's physical pixel dimensions.
+If the device supports smaller textures than the cooked image, the 2D view reduces only the
+uploaded texture to that limit; source pixels, readout and screenshots retain the cooked size.
+
 The desktop UI cooks on a worker thread (`ui-egui/src/cook.rs`) from a snapshot of the package and
 keeps drawing the last results; the browser cooks on the UI thread.
 
@@ -73,6 +81,14 @@ checks and README screenshots.
 
 The properties panel builds every parameter editor from the node catalog; the Levels node adds a
 histogram editor with range handles on top of its sliders ([levels-editor.md](levels-editor.md)).
+
+Function math includes `pow2` (2 raised to each input component), `log2` (base-2 logarithm per
+component), and `cartesian` (scalar radius, then angle in radians, returning
+`[radius * cos(angle), radius * sin(angle)]`). They are entries in `function::FN_OPS`, so the
+function editor and the existing `graph.node.param` / `graph.node.function` commands use the same
+CPU evaluator. Nonpositive logarithm inputs and nonfinite results return zero; Cartesian returns
+zero for nonfinite inputs. These primitives extend the native function library; importing SBS
+function graphs remains a separate gap.
 
 ## Files
 

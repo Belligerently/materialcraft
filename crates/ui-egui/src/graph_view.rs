@@ -1123,6 +1123,7 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
     egui::Area::new(egui::Id::unique("node-search")).fixed_pos(screen).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_width(260.0);
+            let mut reveal_selection = s.focus;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(icon::MAGNIFYING_GLASS).color(tk.text_dim));
                 let r = ui.add(egui::TextEdit::singleline(&mut s.text).hint_text(tr("Search nodes...")).desired_width(220.0));
@@ -1133,6 +1134,7 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
                 }
                 if r.changed() {
                     s.sel = 0;
+                    reveal_selection = true;
                 }
             });
             let list = matches(&s.text);
@@ -1155,9 +1157,10 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
                 for (i, d) in list.iter().enumerate() {
                     let r = ui.add(
                         egui::Button::selectable(i == s.sel, format!("{}   ", d.label))
+                            .min_size(vec2(ui.available_width(), 0.0))
                             .right_text(egui::RichText::new(d.group()).size(10.0).color(tk.text_dim)),
                     );
-                    if i == s.sel && (up || down) {
+                    if i == s.sel && (up || down || reveal_selection) {
                         r.scroll_to_me(None);
                     }
                     if r.clicked() {
