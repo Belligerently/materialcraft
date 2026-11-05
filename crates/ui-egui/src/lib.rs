@@ -263,10 +263,22 @@ impl MaterialCraftApp {
         function_editor::show(self, &ctx);
         toasts(self, &ctx);
         control::request_screenshots(self, &ctx);
+        end_gesture_if_released(&mut self.session, ctx.input(|i| i.pointer.any_released()));
         let dt = (now_ms() - t0) as f32;
         self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
     }
 }
+
+/// A released pointer ends a gesture (slider drag, button click): the next edit is a new undo step.
+pub(crate) fn end_gesture_if_released(session: &mut materialcraft_engine::Session, released: bool) {
+    if released {
+        session.end_merge();
+    }
+}
+
+#[cfg(test)]
+#[path = "lib.test.rs"]
+mod tests;
 
 /// `Documents/MaterialCraft/<sub>` in the user's home folder.
 #[cfg(not(target_arch = "wasm32"))]

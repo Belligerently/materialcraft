@@ -225,7 +225,11 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         "command.run" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
-            match materialcraft_engine::execute(&mut app.session, id, &params) {
+            // Each request is its own undo step, never merged with a neighbour's.
+            app.session.end_merge();
+            let r = materialcraft_engine::execute(&mut app.session, id, &params);
+            app.session.end_merge();
+            match r {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
             }

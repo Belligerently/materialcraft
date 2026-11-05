@@ -210,9 +210,12 @@ impl Session {
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
+            // The merged step keeps its original snapshot; restore the session if `f` fails.
+            let snap = self.snapshot(label);
             let r = f(self);
-            if r.is_ok() {
-                self.changed();
+            match &r {
+                Ok(_) => self.changed(),
+                Err(_) => self.restore(snap),
             }
             return r;
         }
@@ -221,6 +224,12 @@ impl Session {
             self.merge_key = Some(key.into());
         }
         r
+    }
+
+    /// End the current coalescing run: the next [`Session::edit_merged`] starts a new undo step.
+    /// Call it when a gesture ends (pointer release) and once per control or MCP request.
+    pub fn end_merge(&mut self) {
+        self.merge_key = None;
     }
 
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
@@ -402,3 +411,7 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session.test.rs"]
+mod tests;

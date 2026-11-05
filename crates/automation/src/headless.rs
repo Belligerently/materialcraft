@@ -127,7 +127,11 @@ impl Headless {
         if !self.trusted() {
             authorize_command(id, &params)?;
         }
-        Ok(materialcraft_engine::execute(&mut self.session, id, &params)?)
+        // Each request is its own undo step, never merged with a neighbour's.
+        self.session.end_merge();
+        let r = materialcraft_engine::execute(&mut self.session, id, &params);
+        self.session.end_merge();
+        Ok(r?)
     }
 
     /// Run `[{id, params?}]` in order, stopping at the first error (reported with its index).
@@ -290,3 +294,7 @@ pub fn batch_reply(results: Vec<Value>, failed: Option<(usize, &str, String)>) -
         "failed": failed.map(|(index, id, error)| json!({ "index": index, "id": id, "error": error })),
     })
 }
+
+#[cfg(test)]
+#[path = "headless.test.rs"]
+mod tests;
