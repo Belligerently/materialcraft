@@ -1117,6 +1117,7 @@ fn search_popup(app: &mut MaterialCraftApp, ui: &mut Ui, cam: &Cam) {
                 for (i, d) in list.iter().enumerate().take(60) {
                     let r = ui.add(
                         egui::Button::selectable(i == s.sel, format!("{}   ", d.label))
+                            .min_size(vec2(ui.available_width(), 0.0))
                             .right_text(egui::RichText::new(d.group()).size(10.0).color(tk.text_dim)),
                     );
                     if i == s.sel && (up || down) {
