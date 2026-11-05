@@ -8,6 +8,10 @@ use materialcraft_core::{Comment, ExposedParam, Frame, MAX_SIZE_LOG2, MIN_SIZE_L
 use crate::commands::{CommandSpec, always, bad, boolp, f32p, has_graph, has_selection, i64p, ids_param, point, strp, u64p};
 use crate::{Result, Session, cmd};
 
+#[cfg(test)]
+#[path = "graph_cmds.test.rs"]
+mod tests;
+
 pub(crate) fn specs() -> Vec<CommandSpec> {
     vec![
         cmd!("graph.open", "Open graph", [], None, "{graph: index or name}", always, open),
@@ -124,6 +128,10 @@ fn delete(s: &mut Session, p: &J) -> Result<J> {
     let i = graph_index(s, p)?;
     s.edit("Delete graph", |s| {
         s.pkg.graphs.remove(i);
+        // Removing a graph before the open one shifts it down; keep the same graph open.
+        if i < s.graph {
+            s.graph -= 1;
+        }
         s.graph = s.graph.min(s.pkg.graphs.len().saturating_sub(1));
         s.selection.clear();
         s.view2d.node = None;
@@ -495,6 +503,7 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
         let src = s.graph()?.clone();
         let mut sub = materialcraft_core::Graph::new(&name);
         sub.size = src.size;
+        sub.seed = src.seed;
         sub.next_id = src.next_id;
         sub.nodes = src.nodes.iter().filter(|n| ids.contains(&n.id)).cloned().collect();
         sub.connections = src.connections.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).cloned().collect();

@@ -19,6 +19,8 @@ pub fn session(s: &Session, graph: Option<usize>) -> J {
             "exposed": g.exposed,
             "presets": g.presets,
             "inputs": g.inputs,
+            "inputImages": g.input_images,
+            "inputImagesLinear": g.input_images_linear,
             "nodes": g.nodes.iter().map(|n| {
                 let r = cooked.and_then(|c| c.nodes.get(&n.id));
                 let (ins, outs) = materialcraft_eval::ports(&s.pkg, n);

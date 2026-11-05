@@ -24,6 +24,7 @@ pub(crate) fn defs() -> Vec<NodeDef> {
             .atomic()
             .generator()
             .resource("resource", "Bitmap resource")
+            .choice("colour_space", "Color space", &["sRGB", "Linear (data)"], 0)
             .color_out()
             .cook(bitmap),
         node("blend", "Blend", ATOMIC)
@@ -220,7 +221,9 @@ const CHANNEL_SOURCES: &[&str] =
 
 fn bitmap(ctx: &Ctx) -> CookResult {
     let name = ctx.text("resource");
-    match (ctx.resource)(name) {
+    // "Linear (data)" keeps the file's values as stored (normal maps, masks); sRGB decodes color.
+    let key = materialcraft_image::resource_key(name, ctx.i("colour_space") == 1);
+    match (ctx.resource)(&key) {
         Some(img) => Ok(vec![img.resize(ctx.w, ctx.h, ctx.tile)]),
         None if name.is_empty() => Ok(vec![ctx.gen_color(|u, v| {
             let c = if ((u * 8.0) as i32 + (v * 8.0) as i32) % 2 == 0 { 0.8 } else { 0.2 };
@@ -323,33 +326,24 @@ fn distance(ctx: &Ctx) -> CookResult {
     let mask = ctx.gray_or(0, 0.0);
     let maxd = (ctx.f("distance").max(0.0) * ctx.w as f32 / 256.0).max(1e-3);
     let data = mask.data.clone();
-    let d2 = ops::distance_sq(ctx.w, ctx.h, |i| data.get(i).copied().unwrap_or(0.0) > 0.5, ctx.tile);
+    let inside = |i| data.get(i).copied().unwrap_or(0.0) > 0.5;
     let Some(src) = ctx.sized(1) else {
+        let d2 = ops::distance_sq(ctx.w, ctx.h, inside, ctx.tile);
         return Ok(vec![ops::gray_from(ctx.w, ctx.h, d2.iter().map(|d| (1.0 - d.sqrt() / maxd).clamp(0.0, 1.0)).collect())]);
     };
-    // Spread the source's colors: each pixel takes the color of the nearest mask pixel, found by
-    // walking down the distance field's gradient.
-    let dist: Vec<f32> = d2.iter().map(|d| d.sqrt()).collect();
+    // Propagate the exact nearest mask pixel. Gradient walks can stall at stationary points or
+    // stop before reaching the mask, leaving background-colored gaps inside the distance range.
+    let (d2, sites) = ops::distance_sq_with_sites(ctx.w, ctx.h, inside, ctx.tile);
     let combine = ctx.b("combine");
-    let (w, h) = (ctx.w as i64, ctx.h as i64);
-    let field = ops::gray_from(ctx.w, ctx.h, dist);
     Ok(vec![Image::generate(ctx.w, ctx.h, src.kind, |x, y| {
-        let (mut px, mut py) = (x as f32, y as f32);
-        for _ in 0..64 {
-            let d = field.get_gray(px.round() as i64, py.round() as i64, ctx.tile);
-            if d < 0.5 {
-                break;
-            }
-            let (gx, gy) = ops::slope(&field, px.round() as i64, py.round() as i64, ctx.tile);
-            let g = (gx * gx + gy * gy).sqrt().max(1e-4);
-            px -= gx / g * d.min(8.0);
-            py -= gy / g * d.min(8.0);
-            if !ctx.tile && (px < 0.0 || py < 0.0 || px >= w as f32 || py >= h as f32) {
-                break;
-            }
-        }
-        let mut c = src.get(px.round() as i64, py.round() as i64, ctx.tile);
-        let d = field.get_gray(x as i64, y as i64, ctx.tile);
+        let i = y as usize * ctx.w as usize + x as usize;
+        let site = sites.get(i).copied().unwrap_or(usize::MAX);
+        let mut c = if site == usize::MAX {
+            [0.0, 0.0, 0.0, if src.is_gray() { 1.0 } else { 0.0 }]
+        } else {
+            src.get((site % ctx.w as usize) as i64, (site / ctx.w as usize) as i64, false)
+        };
+        let d = d2.get(i).copied().unwrap_or(f32::INFINITY).sqrt();
         if d > maxd {
             c = [0.0, 0.0, 0.0, if src.is_gray() { 1.0 } else { 0.0 }];
         } else if combine {

@@ -69,6 +69,13 @@ impl AuthorizedWorkspace {
         Ok(())
     }
 
+    /// Fail now, before any expensive work, when [`write`](Self::write) to `path` cannot succeed
+    /// for lack of a write root or because the path is malformed.
+    pub fn check_write(&self, path: &str) -> Result<(), AutomationError> {
+        relative_path(path)?;
+        self.write.as_ref().map(|_| ()).ok_or_else(|| denied("write"))
+    }
+
     /// Create a directory (and its parents) below the write root.
     pub fn create_dir_all(&self, path: &str) -> Result<(), AutomationError> {
         let rel = relative_path(path)?;
