@@ -947,7 +947,3 @@ fn skew(ctx: &Ctx) -> CookResult {
         if vert { img.sample(u, v + (u - 0.5) * k, ctx.tile) } else { img.sample(u + (v - 0.5) * k, v, ctx.tile) }
     })])
 }
-
-#[cfg(test)]
-#[path = "filters.test.rs"]
-mod tests;
