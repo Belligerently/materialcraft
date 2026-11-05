@@ -115,17 +115,33 @@ mod tests {
             "scratches_generator",
             "rust",
             "moss",
+            "anisotropic_noise",
+            "grunge_map_3",
+            "leaks",
         ] {
             let def = find(id).unwrap();
             let img = &cook(def, &[], 64).unwrap()[0];
             // The jump across the wrap is no larger than typical neighbouring differences.
             let mut seam = 0.0f32;
             let mut inner = 0.0f32;
+            // (Interior differences are averaged over every column pair: sparse images can be
+            // blank at the middle.)
             for y in 0..64 {
                 seam += (img.get(63, y, false)[0] - img.get(0, y, false)[0]).abs();
-                inner += (img.get(31, y, false)[0] - img.get(32, y, false)[0]).abs();
+                for x in 0..63 {
+                    inner += (img.get(x, y, false)[0] - img.get(x + 1, y, false)[0]).abs() / 63.0;
+                }
             }
             assert!(seam <= inner * 3.0 + 0.5, "{id}: seam {seam} vs inner {inner}");
+            // Same across the top and bottom edges.
+            let (mut vseam, mut vinner) = (0.0f32, 0.0f32);
+            for x in 0..64 {
+                vseam += (img.get(x, 63, false)[0] - img.get(x, 0, false)[0]).abs();
+                for y in 0..63 {
+                    vinner += (img.get(x, y, false)[0] - img.get(x, y + 1, false)[0]).abs() / 63.0;
+                }
+            }
+            assert!(vseam <= vinner * 3.0 + 0.5, "{id}: vertical seam {vseam} vs inner {vinner}");
         }
     }
 
