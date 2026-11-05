@@ -4,7 +4,8 @@
 use std::path::Path;
 
 use materialcraft_engine::core::NodeId;
-use materialcraft_engine::{Session, commands, file_cmds, inspect};
+use materialcraft_engine::formats::material::MATERIAL_EXT;
+use materialcraft_engine::{Session, commands, file_cmds, inspect, material_cmds};
 use materialcraft_render::{Lighting, Maps, Scene, Settings};
 use serde_json::{Value, json};
 
@@ -197,6 +198,26 @@ impl Headless {
             written.push(path);
         }
         Ok(json!({"files": written}))
+    }
+
+    /// Cook a graph and write it as a portable `.mcmat` material (`.mcmat` appended when
+    /// missing) to `path`: `{path, graph?, size?, values?}`, the workspace-scoped
+    /// `file.exportMaterial`. The file is capped at what `package_open` may read back.
+    pub fn export_material(&mut self, p: &Value) -> Result<Value, AutomationError> {
+        let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("`path` is required"))?;
+        let path = if path.to_ascii_lowercase().ends_with(&format!(".{MATERIAL_EXT}")) { path.to_string() } else { format!("{path}.{MATERIAL_EXT}") };
+        match &self.fs {
+            Filesystem::Denied => return Err(bad("file access is not granted: start the server with --write-root <dir>")),
+            Filesystem::Workspace(w) => w.check_write(&path)?,
+            Filesystem::TrustedLocal => {}
+        }
+        let (gi, options) = material_cmds::material_request(&self.session, "material.export", p)?;
+        let bytes = material_cmds::material_bytes(&self.session, gi, &options)?;
+        if bytes.len() as u64 > MAX_READ_BYTES {
+            return Err(bad(format!("the material is {} bytes (limit {MAX_READ_BYTES}); export a smaller `size`", bytes.len())));
+        }
+        self.write(&path, &bytes)?;
+        Ok(json!({"path": path, "bytes": bytes.len()}))
     }
 
     /// Render the 3D view or a node's 2D output as PNG.
