@@ -321,13 +321,9 @@ fn scratches(ctx: &Ctx) -> CookResult {
     for (k, (p, d, _)) in segs.iter().enumerate() {
         let (x0, x1) = (p[0].min(p[0] + d[0]) - width, p[0].max(p[0] + d[0]) + width);
         let (y0, y1) = (p[1].min(p[1] + d[1]) - width, p[1].max(p[1] + d[1]) + width);
-        // At most one full turn of bins per axis, so no segment lands twice in a bin.
-        let (gy0, gx0) = ((y0 * G as f32).floor() as i64, (x0 * G as f32).floor() as i64);
-        let gy1 = ((y1 * G as f32).floor() as i64).min(gy0.saturating_add(G as i64 - 1));
-        let gx1 = ((x1 * G as f32).floor() as i64).min(gx0.saturating_add(G as i64 - 1));
-        for gy in gy0..=gy1 {
-            for gx in gx0..=gx1 {
-                if let Some(b) = bins.get_mut(gy.rem_euclid(G as i64) as usize * G + gx.rem_euclid(G as i64) as usize) {
+        for gy in (y0 * G as f32).floor() as i32..=(y1 * G as f32).floor() as i32 {
+            for gx in (x0 * G as f32).floor() as i32..=(x1 * G as f32).floor() as i32 {
+                if let Some(b) = bins.get_mut(gy.rem_euclid(G as i32) as usize * G + gx.rem_euclid(G as i32) as usize) {
                     b.push(k);
                 }
             }
@@ -362,7 +358,7 @@ fn shape_node(ctx: &Ctx) -> CookResult {
 }
 
 fn splatter(ctx: &Ctx) -> CookResult {
-    let count = ctx.i("count").clamp(1, 2000) as u32;
+    let count = ctx.i("count").clamp(1, 20000) as u32;
     let (k, size, sr, lr, s) = (ctx.i("pattern"), ctx.f("size"), ctx.f("size_random"), ctx.f("lum_random"), ctx.seed);
     let items: Vec<([f32; 2], f32, f32, f32)> = (0..count)
         .map(|i| ([rand1(i * 5, s), rand1(i * 5 + 1, s)], size * (1.0 - sr * rand1(i * 5 + 2, s)), 1.0 - lr * rand1(i * 5 + 3, s), rand1(i * 5 + 4, s)))
@@ -383,13 +379,11 @@ fn stamp(
     let mut bins: Vec<Vec<usize>> = vec![Vec::new(); G * G];
     for (i, (c, r, _, _)) in items.iter().enumerate() {
         let r = r * 1.42;
-        // At most one full turn of bins per axis, so no item lands twice in a bin.
-        let (gy0, gx0) = (((c[1] - r) * G as f32).floor() as i64, ((c[0] - r) * G as f32).floor() as i64);
-        let gy1 = (((c[1] + r) * G as f32).floor() as i64).min(gy0.saturating_add(G as i64 - 1));
-        let gx1 = (((c[0] + r) * G as f32).floor() as i64).min(gx0.saturating_add(G as i64 - 1));
-        for gy in gy0..=gy1 {
-            for gx in gx0..=gx1 {
-                if let Some(b) = bins.get_mut(gy.rem_euclid(G as i64) as usize * G + gx.rem_euclid(G as i64) as usize) {
+        for gy in ((c[1] - r) * G as f32).floor() as i32..=((c[1] + r) * G as f32).floor() as i32 {
+            for gx in ((c[0] - r) * G as f32).floor() as i32..=((c[0] + r) * G as f32).floor() as i32 {
+                if let Some(b) = bins.get_mut(gy.rem_euclid(G as i32) as usize * G + gx.rem_euclid(G as i32) as usize)
+                    && !b.contains(&i)
+                {
                     b.push(i);
                 }
             }
@@ -552,7 +546,3 @@ fn waveform(ctx: &Ctx) -> CookResult {
         ((x + w) * TAU * n).sin() * 0.5 + 0.5
     })])
 }
-
-#[cfg(test)]
-#[path = "patterns.test.rs"]
-mod tests;

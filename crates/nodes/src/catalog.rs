@@ -352,60 +352,6 @@ pub fn categories() -> Vec<(&'static str, Vec<&'static str>)> {
     out
 }
 
-/// How many slider spans the hard limit extends past each end of a parameter's range.
-const HARD_SPAN: f32 = 16.0;
-
-/// Clamp `v` to `[lo, hi]`; a non-finite `v` becomes `fallback`.
-fn clamp_finite(v: f32, lo: f32, hi: f32, fallback: f32) -> f32 {
-    if v.is_finite() { v.clamp(lo, hi) } else { fallback }
-}
-
-/// Clamp numeric parameters to hard limits: the declared slider range widened by
-/// `HARD_SPAN` spans on each side (the editor lets values past the slider through, so the
-/// slider range itself is not a limit). Non-finite values become the default. Keeps cooks
-/// bounded whatever a file, binding, function or command supplies.
-pub fn clamp_params(def: &NodeDef, params: &mut BTreeMap<String, Value>) {
-    for p in &def.params {
-        let Some(v) = params.get_mut(p.id) else { continue };
-        if let Value::Enum(i) = v {
-            if !p.options.is_empty() {
-                *i = (*i).min(u32::try_from(p.options.len() - 1).unwrap_or(u32::MAX));
-            }
-            continue;
-        }
-        if let Value::Color(c) = v {
-            for x in c {
-                *x = clamp_finite(*x, -HARD_SPAN, 1.0 + HARD_SPAN, 0.0);
-            }
-            continue;
-        }
-        if p.min >= p.max {
-            continue;
-        }
-        let span = p.max - p.min;
-        let (lo, hi) = (p.min - HARD_SPAN * span, p.max + HARD_SPAN * span);
-        // The default's component `i`, or 0 when the default is a different variant.
-        let fallback = |i: usize| match &p.default {
-            Value::Float(d) => [*d].get(i).copied(),
-            Value::Float2(d) => d.get(i).copied(),
-            Value::Float3(d) => d.get(i).copied(),
-            Value::Float4(d) => d.get(i).copied(),
-            _ => None,
-        };
-        let clamp_at = |x: &mut f32, i: usize| *x = clamp_finite(*x, lo, hi, fallback(i).unwrap_or(0.0));
-        let clamp_int = |x: &mut i32| *x = (*x as f32).clamp(lo, hi).round() as i32;
-        match v {
-            Value::Float(x) => clamp_at(x, 0),
-            Value::Float2(a) => a.iter_mut().enumerate().for_each(|(i, x)| clamp_at(x, i)),
-            Value::Float3(a) => a.iter_mut().enumerate().for_each(|(i, x)| clamp_at(x, i)),
-            Value::Float4(a) => a.iter_mut().enumerate().for_each(|(i, x)| clamp_at(x, i)),
-            Value::Int(x) => clamp_int(x),
-            Value::Int2(a) => a.iter_mut().for_each(clamp_int),
-            _ => {}
-        }
-    }
-}
-
 /// Parameter values for a node: catalog defaults overlaid with `overrides`.
 pub fn resolve_params(def: &NodeDef, overrides: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
     let mut m: BTreeMap<String, Value> = def.params.iter().map(|p| (p.id.to_string(), p.default.clone())).collect();
@@ -417,10 +363,5 @@ pub fn resolve_params(def: &NodeDef, overrides: &BTreeMap<String, Value>) -> BTr
             m.insert(k.clone(), v.clone());
         }
     }
-    clamp_params(def, &mut m);
     m
 }
-
-#[cfg(test)]
-#[path = "catalog.test.rs"]
-mod tests;

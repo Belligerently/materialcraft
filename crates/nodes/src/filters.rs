@@ -9,10 +9,6 @@ use crate::atomic::{height_to_normal, levels_fn, transform_sample};
 use crate::catalog::{CookResult, Ctx, NodeDef, PortKind, node};
 use crate::ops;
 
-#[cfg(test)]
-#[path = "filters.test.rs"]
-mod tests;
-
 const ADJ: &str = "Filters/Adjustments";
 const BLENDING: &str = "Filters/Blending";
 const BLURS: &str = "Filters/Blurs";
@@ -365,8 +361,7 @@ fn contrast_luminosity(ctx: &Ctx) -> CookResult {
 }
 
 fn exposure(ctx: &Ctx) -> CookResult {
-    // Past +-64 stops the result is all black/white anyway; this keeps 2^stops finite.
-    let k = 2f32.powf(ctx.f("stops").clamp(-64.0, 64.0));
+    let k = 2f32.powf(ctx.f("stops"));
     per_value(ctx, |v| v * k)
 }
 
@@ -510,21 +505,33 @@ fn anisotropic_blur(ctx: &Ctx) -> CookResult {
 }
 
 fn blur_xy(img: &Image, sx: f32, sy: f32, tile: bool) -> Image {
-    if !sx.is_finite() || !sy.is_finite() {
-        return img.clone();
-    }
     // Separable: a horizontal-only Gaussian is a 2D one on an image stretched vertically, so
-    // blur fully with the smaller sigma and add the extra along x.
-    let cap = img.w.max(img.h) as f32;
-    let (sx, sy) = (sx.min(cap), sy.min(cap));
+    // blur fully with the smaller sigma and add the extra along x by repeated small passes.
     let base = ops::gaussian(img, sy, tile);
     let extra = (sx * sx - sy * sy).max(0.0).sqrt();
     if extra < 0.1 {
         return base;
     }
-    // Independent Gaussians compose in quadrature, so one horizontal Gaussian of sigma `extra`
-    // finishes the job (box passes: O(1) per pixel, sigma clamped to the image size).
-    ops::gaussian_h(&base, extra, tile)
+    let n = (extra / 2.0).ceil().max(1.0) as i64;
+    let step = extra / (n as f32).sqrt();
+    let mut out = base;
+    for _ in 0..n {
+        let src = out.clone();
+        let r = (step * 2.0).ceil() as i64;
+        let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * step * step)).exp()).collect();
+        let sum: f32 = k.iter().sum();
+        out = Image::generate(src.w, src.h, src.kind, |x, y| {
+            let mut acc = [0.0; 4];
+            for (j, kv) in k.iter().enumerate() {
+                let p = src.get(x as i64 + j as i64 - r, y as i64, tile);
+                for c in 0..4 {
+                    acc[c] += p[c] * kv / sum;
+                }
+            }
+            acc
+        });
+    }
+    out
 }
 
 fn non_uniform_blur(ctx: &Ctx) -> CookResult {
@@ -680,8 +687,7 @@ fn edge_detect(ctx: &Ctx) -> CookResult {
         .map(|(a, b)| {
             let d = a.sqrt().max(b.sqrt());
             let t = (1.0 - d / w).max(0.0);
-            // A non-positive exponent on t = 0 gives inf; in range (round <= 1) it is >= 0.2.
-            t.powf((1.0 - round * 0.8).max(0.01))
+            t.powf(1.0 - round * 0.8)
         })
         .collect();
     Ok(vec![ops::gray_from(ctx.w, ctx.h, v)])
@@ -784,10 +790,6 @@ fn normal_blend(ctx: &Ctx) -> CookResult {
         // Reoriented normal mapping (Barré-Brisebois & Hill).
         let t = [b[0], b[1], b[2] + 1.0];
         let u = [-d[0], -d[1], d[2]];
-        // A base normal pointing straight away (z = -1) has no reorientation; keep it.
-        if t[2].abs() < 1e-4 {
-            return pack(b, 1.0);
-        }
         let dot = t[0] * u[0] + t[1] * u[1] + t[2] * u[2];
         let r = [t[0] * dot / t[2] - u[0], t[1] * dot / t[2] - u[1], t[2] * dot / t[2] - u[2]];
         pack(r, 1.0)
@@ -839,9 +841,8 @@ fn normal_to_height(ctx: &Ctx) -> CookResult {
             cur = Image::generate(sw, sh, Kind::Gray, |x, y| {
                 let (x, y) = (x as i64, y as i64);
                 let nb = prev.get(x - 1, y, true)[0] + prev.get(x + 1, y, true)[0] + prev.get(x, y - 1, true)[0] + prev.get(x, y + 1, true)[0];
-                // Divergence of the slope field in pixels of this level: the slopes are per
-                // full-size pixel and one pixel here spans `scale` of them, so multiply.
-                let div = (gxs.get(x + 1, y, true)[0] - gxs.get(x - 1, y, true)[0] + gys.get(x, y + 1, true)[0] - gys.get(x, y - 1, true)[0]) * 0.5 * scale;
+                // Divergence of the gradient field (pixels of this level).
+                let div = (gxs.get(x + 1, y, true)[0] - gxs.get(x - 1, y, true)[0] + gys.get(x, y + 1, true)[0] - gys.get(x, y - 1, true)[0]) * 0.5 / scale;
                 [(nb - div) * 0.25, 0.0, 0.0, 0.0]
             });
         }

@@ -5,10 +5,7 @@
 use std::time::Duration;
 
 use egui::vec2;
-use egui_kittest::{
-    Harness,
-    kittest::{By, Queryable},
-};
+use egui_kittest::{Harness, kittest::Queryable};
 use materialcraft_ui_egui::{MaterialCraftApp, UiState};
 use serde_json::json;
 
@@ -34,27 +31,6 @@ fn save(h: &mut Harness<'static, MaterialCraftApp>, dir: &std::path::Path, name:
     let img = h.render().expect("render");
     img.save(dir.join(format!("{name}.png"))).expect("save");
     println!("wrote {}", dir.join(format!("{name}.png")).display());
-}
-
-#[test]
-#[ignore = "requires an offscreen GPU; run explicitly with --ignored"]
-fn explorer_export_opens_the_clicked_graph() {
-    let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), UiState::default());
-    app.run("graph.duplicate", json!({"graph": 0}));
-    app.session.pkg.graphs[1].name = "Export target".into();
-    app.run("graph.open", json!({"graph": 0}));
-    let mut h = harness(app, 1600.0, 960.0);
-    settle(&mut h, 5);
-    h.get_by_label("Export target").click_secondary();
-    settle(&mut h, 3);
-    h.get_all(By::new().label("Export outputs...")).last().unwrap().click();
-    settle(&mut h, 3);
-    assert_eq!(h.state().session.graph, 1);
-    assert!(h.state().ui.windows.export);
-    if let Some(dir) = std::env::var_os("MC_SNAPSHOT_DIR").map(std::path::PathBuf::from) {
-        std::fs::create_dir_all(&dir).unwrap();
-        save(&mut h, &dir, "explorer-export");
-    }
 }
 
 /// The startup graph stays empty through real UI frames; templates are still available on demand.
@@ -102,10 +78,6 @@ fn snapshots() {
     h.state_mut().run("view.2d", json!({"node": 16, "histogram": true}));
     settle(&mut h, 30);
     save(&mut h, &dir, "workspace");
-    h.state_mut().run("view.3d", json!({"heightScale": 0.2}));
-    settle(&mut h, 60);
-    save(&mut h, &dir, "height-relief");
-    h.state_mut().run("view.3d", json!({"heightScale": 0.04}));
     for (tpl, name) in
         [("wood", "wood"), ("rusty_metal", "rusty-metal"), ("stone_tiles", "stone-tiles"), ("fabric", "fabric"), ("ground", "ground"), ("lava", "lava")]
     {

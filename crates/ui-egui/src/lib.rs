@@ -16,9 +16,6 @@ pub mod function_editor;
 pub mod graph_view;
 pub mod i18n;
 pub mod levels_editor;
-#[cfg(test)]
-#[path = "lib.test.rs"]
-mod lib_test;
 pub mod library;
 pub mod menus;
 pub mod properties;
@@ -26,7 +23,6 @@ pub mod state;
 pub mod theme;
 pub mod thumbs;
 pub mod toolbar;
-pub mod unsaved;
 pub mod view2d;
 pub mod view3d;
 pub mod web_files;
@@ -71,10 +67,6 @@ pub struct MaterialCraftApp {
     pub ui_ms: f32,
     /// The last status message (bottom left).
     pub status: String,
-    /// A package picked in the browser, waiting on the "unsaved changes" dialog: (name, bytes).
-    pub pending_load: Option<(String, Vec<u8>)>,
-    /// The user chose to discard (or saved): the window may close.
-    pub quit_confirmed: bool,
     last_time: f64,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_autosave: f64,
@@ -118,8 +110,6 @@ impl MaterialCraftApp {
             fps: 0.0,
             ui_ms: 0.0,
             status: String::new(),
-            pending_load: None,
-            quit_confirmed: false,
             last_time: 0.0,
             next_autosave,
             styled: None,
@@ -138,21 +128,17 @@ impl MaterialCraftApp {
         }
         let p = if self.ui.prefs.preview_size == 0 { None } else { Some(self.ui.prefs.preview_size.clamp(64, 8192)) };
         if self.session.preview_size != p {
-            self.run("view.previewSize", serde_json::json!({"size": p.unwrap_or(0)}));
+            self.session.preview_size = p;
+            self.session.dirty = true;
         }
     }
 
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
-        match cook::execute_guarded(&mut self.session, id, &params) {
-            Ok(v) => {
-                if id == "view.previewSize" {
-                    self.ui.prefs.preview_size = self.session.preview_size.unwrap_or(0);
-                }
-                Some(v)
-            }
+        match materialcraft_engine::execute(&mut self.session, id, &params) {
+            Ok(v) => Some(v),
             Err(e) => {
-                self.toast(e, true);
+                self.toast(e.to_string(), true);
                 None
             }
         }
@@ -240,11 +226,9 @@ impl MaterialCraftApp {
             self.styled = Some(style);
         }
         let scale = self.ui.prefs.ui_scale.clamp(0.5, 3.0);
-        // Rescaling during a drag moves the control under the pointer and feeds back into its value.
-        if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|i| i.pointer.any_down()) {
+        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
             ctx.set_zoom_factor(scale);
         }
-        unsaved::handle_close(self, ctx);
         control::poll(self, ctx);
         web_files::poll(self);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
@@ -279,19 +263,8 @@ impl MaterialCraftApp {
         function_editor::show(self, &ctx);
         toasts(self, &ctx);
         control::request_screenshots(self, &ctx);
-        end_gesture_if_released(
-            &mut self.session,
-            ctx.input(|i| i.pointer.any_released() || i.key_released(egui::Key::Enter) || i.key_released(egui::Key::Space) || i.key_released(egui::Key::Tab)),
-        );
         let dt = (now_ms() - t0) as f32;
         self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
-    }
-}
-
-/// A completed pointer or keyboard action ends the gesture: the next edit is a new undo step.
-pub(crate) fn end_gesture_if_released(session: &mut materialcraft_engine::Session, released: bool) {
-    if released {
-        session.end_merge();
     }
 }
 

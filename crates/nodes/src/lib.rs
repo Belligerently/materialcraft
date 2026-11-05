@@ -28,13 +28,12 @@ pub mod svg;
 pub mod text;
 pub mod weathering;
 
-pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, clamp_params, find, resolve_params};
+pub use catalog::{CookResult, Ctx, NodeDef, ParamDef, PortDef, PortKind, catalog, categories, find, resolve_params};
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use materialcraft_core::Value;
     use materialcraft_image::{Image, Kind};
 
     use super::*;
@@ -71,50 +70,6 @@ mod tests {
             }
         }
         assert!(catalog().len() >= 200, "{} nodes", catalog().len());
-    }
-
-    /// Every node cooks with each numeric parameter at a hostile value (huge, negative huge, NaN):
-    /// the hard limits keep the cook bounded, finite and the right size.
-    #[test]
-    fn every_node_survives_hostile_params() {
-        use std::time::{Duration, Instant};
-
-        let mut slow: Vec<(String, Duration)> = Vec::new();
-        let total = Instant::now();
-        for def in catalog() {
-            if def.id == "graph_instance" {
-                continue;
-            }
-            for p in &def.params {
-                for h in [1e30_f32, -1e30, f32::NAN] {
-                    let v = match p.default {
-                        Value::Float(_) => Value::Float(h),
-                        Value::Int(_) => Value::Int(h as i32),
-                        Value::Float2(_) => Value::Float2([h, h]),
-                        Value::Enum(_) => Value::Enum(h as u32),
-                        _ => continue,
-                    };
-                    let mut params = resolve_params(def, &BTreeMap::from([(p.id.to_string(), v)]));
-                    clamp_params(def, &mut params);
-                    let inputs = vec![None; def.inputs.len()];
-                    let no_res = |_: &str| None;
-                    let vars = BTreeMap::new();
-                    let ctx = Ctx { w: 16, h: 16, seed: 7, tile: true, inputs: &inputs, params: &params, resource: &no_res, vars: &vars };
-                    let t = Instant::now();
-                    let out = (def.cook)(&ctx).unwrap_or_else(|e| panic!("{}.{}={h}: {e}", def.id, p.id));
-                    let dt = t.elapsed();
-                    assert!(dt < Duration::from_secs(2), "{}.{}={h} took {dt:?}", def.id, p.id);
-                    if dt > Duration::from_millis(250) {
-                        slow.push((format!("{}.{}={h}", def.id, p.id), dt));
-                    }
-                    for img in &out {
-                        assert_eq!((img.w, img.h), (16, 16), "{}.{}={h}", def.id, p.id);
-                        assert!(img.data.iter().all(|x| x.is_finite()), "{}.{}={h} produced a non-finite value", def.id, p.id);
-                    }
-                }
-            }
-        }
-        eprintln!("hostile params: total {:?}; cooks over 250 ms: {slow:?}", total.elapsed());
     }
 
     #[test]
@@ -160,33 +115,17 @@ mod tests {
             "scratches_generator",
             "rust",
             "moss",
-            "anisotropic_noise",
-            "grunge_map_3",
-            "leaks",
         ] {
             let def = find(id).unwrap();
             let img = &cook(def, &[], 64).unwrap()[0];
             // The jump across the wrap is no larger than typical neighbouring differences.
             let mut seam = 0.0f32;
             let mut inner = 0.0f32;
-            // (Interior differences are averaged over every column pair: sparse images can be
-            // blank at the middle.)
             for y in 0..64 {
                 seam += (img.get(63, y, false)[0] - img.get(0, y, false)[0]).abs();
-                for x in 0..63 {
-                    inner += (img.get(x, y, false)[0] - img.get(x + 1, y, false)[0]).abs() / 63.0;
-                }
+                inner += (img.get(31, y, false)[0] - img.get(32, y, false)[0]).abs();
             }
             assert!(seam <= inner * 3.0 + 0.5, "{id}: seam {seam} vs inner {inner}");
-            // Same across the top and bottom edges.
-            let (mut vseam, mut vinner) = (0.0f32, 0.0f32);
-            for x in 0..64 {
-                vseam += (img.get(x, 63, false)[0] - img.get(x, 0, false)[0]).abs();
-                for y in 0..63 {
-                    vinner += (img.get(x, y, false)[0] - img.get(x, y + 1, false)[0]).abs() / 63.0;
-                }
-            }
-            assert!(vseam <= vinner * 3.0 + 0.5, "{id}: vertical seam {vseam} vs inner {vinner}");
         }
     }
 
@@ -205,38 +144,5 @@ mod tests {
         assert!((out[0].data[0] - 0.125).abs() < 1e-6);
         assert!((atomic::levels_fn(0.5, 0.0, 0.5, 1.0, 0.0, 1.0) - 0.5).abs() < 1e-5);
         assert_eq!(atomic::levels_fn(0.2, 0.4, 0.5, 0.8, 0.0, 1.0), 0.0);
-    }
-
-    /// Cook one node with a single overridden parameter on a `size`-square noise input.
-    fn cook_with(id: &str, key: &str, value: materialcraft_core::Value, size: u32) -> Image {
-        let def = find(id).unwrap();
-        let mut over = BTreeMap::new();
-        over.insert(key.to_string(), value);
-        let params = resolve_params(def, &over);
-        let no_res = |_: &str| None;
-        let vars = BTreeMap::new();
-        let img = Image::generate(size, size, Kind::Gray, |x, y| [((x * 7 + y * 13) % 17) as f32 / 16.0, 0.0, 0.0, 1.0]);
-        let inputs = [Some(img)];
-        let ctx = Ctx { w: size, h: size, seed: 7, tile: true, inputs: &inputs, params: &params, resource: &no_res, vars: &vars };
-        (def.cook)(&ctx).unwrap().remove(0)
-    }
-
-    /// A hostile blur intensity must return promptly (it used to loop for ~i64::MAX passes).
-    #[test]
-    fn anisotropic_blur_hostile_intensity_is_bounded() {
-        let t = std::time::Instant::now();
-        let out = cook_with("anisotropic_blur", "intensity", materialcraft_core::Value::Float(1e15), 64);
-        assert!(out.data.iter().all(|v| v.is_finite()));
-        assert!(t.elapsed().as_secs() < 20, "took {:?}", t.elapsed());
-    }
-
-    /// Large-but-legal intensity stays close to the Gaussian it approximates.
-    #[test]
-    fn anisotropic_blur_matches_horizontal_gaussian() {
-        let img = Image::generate(128, 128, Kind::Gray, |x, y| [((x * 7 + y * 13) % 17) as f32 / 16.0, 0.0, 0.0, 1.0]);
-        let out = cook_with("anisotropic_blur", "intensity", materialcraft_core::Value::Float(8.0), 128);
-        // Mean is preserved by a normalised blur on a tiling image.
-        let mean = |i: &Image| (0..128 * 128).map(|k| i.data[k]).sum::<f32>() / (128.0 * 128.0);
-        assert!((mean(&out) - mean(&img)).abs() < 0.02);
     }
 }

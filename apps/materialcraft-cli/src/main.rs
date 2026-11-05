@@ -30,18 +30,17 @@ USAGE:
   materialcraft-cli cook <input> [--graph <index>] [--set <input>=<value>]... [--full]
       Cook a graph and print per-node timings and errors.
   materialcraft-cli export <input> <dir> [--graph <index>] [--set <input>=<value>]... [--format <ext>]
-                   [--depth 8|16|32] [--size <px>] [--pattern <p>]
+                   [--depth 8|16|32] [--pattern <p>]
       Cook at full size and write every output (png, jpg, tga, tif, bmp, webp, exr, hdr).
   materialcraft-cli render <input> <out.png> [--size <W>x<H>] [--view 3d|2d] [--scene <id>] [--node <id>]
                    [--yaw <deg>] [--pitch <deg>] [--graph <index>] [--set <input>=<value>]... [--full]
                    [--tiling <n>] [--hq [--displacement <radii>]]
       Render the material on a 3D scene (rounded_cube, cube, sphere, cylinder, plane, torus,
-      material_ball), or one node's output (--view 2d), to PNG. No GPU needed. The height output
-      raises the surface; --hq is a beauty render with a finer mesh, ambient occlusion and a key light.
+      material_ball), or one node's output (--view 2d), to PNG. No GPU needed. --hq is a beauty
+      render: real displacement from the height output, ambient occlusion and a key light.
   materialcraft-cli mcp [--bridge <port>] [--token <token>] [--read-root <dir>] [--write-root <dir>]
       MCP server on stdio: headless (file access only below the roots), or bridged to
-      `materialcraft --control <port>`. --automation-read-root / --automation-write-root are
-      the same as --read-root / --write-root (mcp and serve).
+      `materialcraft --control <port>`.
   materialcraft-cli serve [--port <port>] [--read-root <dir>] [--write-root <dir>]
       JSON lines ({\"id\",\"method\",\"params\"}) on stdio, or on 127.0.0.1:<port> with a token.
 
@@ -59,15 +58,11 @@ const SUBCOMMANDS: &[(&str, &[&str], &[&str])] = &[
     ("batch", &[], &[]),
     ("new", &["--size", "--name"], &[]),
     ("cook", &["--graph", "--set"], &["--full"]),
-    ("export", &["--graph", "--set", "--format", "--depth", "--size", "--pattern"], &[]),
+    ("export", &["--graph", "--set", "--format", "--depth", "--pattern"], &[]),
     ("render", &["--size", "--view", "--scene", "--node", "--yaw", "--pitch", "--graph", "--set", "--tiling", "--displacement"], &["--full", "--hq"]),
-    ("mcp", &["--bridge", "--token", "--read-root", "--write-root", "--automation-read-root", "--automation-write-root"], &[]),
-    ("serve", &["--port", "--read-root", "--write-root", "--automation-read-root", "--automation-write-root"], &[]),
+    ("mcp", &["--bridge", "--token", "--read-root", "--write-root"], &[]),
+    ("serve", &["--port", "--read-root", "--write-root"], &[]),
 ];
-
-/// (alias, flag): the `--automation-*-root` spelling the other crafting apps use, stored under the
-/// short name so the last root given wins whichever spelling it used.
-const ALIASES: &[(&str, &str)] = &[("--automation-read-root", "--read-root"), ("--automation-write-root", "--write-root")];
 
 struct Args {
     pos: Vec<String>,
@@ -96,8 +91,7 @@ fn parse(cmd: &str, raw: &[String]) -> Result<Args, String> {
     while let Some(x) = it.next() {
         if valued.contains(&x.as_str()) {
             let v = it.next().ok_or_else(|| format!("{x} needs a value"))?;
-            let name = ALIASES.iter().find(|(alias, _)| alias == x).map_or(x.as_str(), |(_, flag)| flag);
-            a.flags.push((name.to_string(), Some(v.clone())));
+            a.flags.push((x.clone(), Some(v.clone())));
         } else if bare.contains(&x.as_str()) {
             a.flags.push((x.clone(), None));
         } else if x.starts_with('-') && x.len() > 1 && x.parse::<f64>().is_err() {
@@ -234,7 +228,7 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
             let mut h = open(a.pos(0, "<input>")?)?;
             select_graph(&mut h, a)?;
             let dir = a.pos(1, "<dir>")?;
-            let p = json!({"dir": dir, "graph": a.num::<u64>("--graph")?, "format": a.get("--format"), "depth": a.num::<u64>("--depth")?, "size": a.num::<u64>("--size")?, "pattern": a.get("--pattern")});
+            let p = json!({"dir": dir, "graph": a.num::<u64>("--graph")?, "format": a.get("--format"), "depth": a.num::<u64>("--depth")?, "pattern": a.get("--pattern")});
             print(&h.export(&p).map_err(|e| e.to_string())?);
         }
         "render" => {
@@ -281,16 +275,14 @@ fn run(cmd: &str, a: &Args) -> Result<(), String> {
             let h = Arc::new(Mutex::new(Headless::new(Headless::default_session(), workspace(a)?)));
             match a.num::<u16>("--port")? {
                 Some(port) => {
-                    // Bind first: a port in use must not replace its server's token file, and port 0's
-                    // token file is named after the port actually picked.
-                    let listener = rpc::bind_tcp(port).map_err(|e| e.to_string())?;
-                    let addr = listener.local_addr().map_err(|e| e.to_string())?;
-                    let (token, file) = server_token(addr.port()).map_err(|e| e.to_string())?;
-                    eprintln!("materialcraft-cli: serving JSON lines on {addr}");
-                    if let Some(f) = &file {
-                        eprintln!("materialcraft-cli: token in {}", f.display());
-                    }
-                    rpc::serve_listener(listener, h, token).map_err(|e| e.to_string())?;
+                    let (token, file) = server_token(port).map_err(|e| e.to_string())?;
+                    rpc::serve_tcp(port, h, token, |addr| {
+                        eprintln!("materialcraft-cli: serving JSON lines on {addr}");
+                        if let Some(f) = &file {
+                            eprintln!("materialcraft-cli: token in {}", f.display());
+                        }
+                    })
+                    .map_err(|e| e.to_string())?;
                 }
                 None => rpc::serve_lines(&h, std::io::stdin().lock(), std::io::stdout().lock()).map_err(|e| e.to_string())?,
             }
@@ -308,37 +300,4 @@ fn workspace(a: &Args) -> Result<Filesystem, String> {
     }
     let ws = AuthorizedWorkspace::new(r.map(std::path::Path::new), w.map(std::path::Path::new)).map_err(|e| e.to_string())?;
     Ok(Filesystem::Workspace(ws))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn strings(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn automation_root_flags_are_aliases_of_the_short_ones() {
-        for cmd in ["mcp", "serve"] {
-            let a = parse(cmd, &strings(&["--automation-read-root", "/r", "--automation-write-root", "/w"])).unwrap();
-            assert_eq!((a.get("--read-root"), a.get("--write-root")), (Some("/r"), Some("/w")), "{cmd}");
-            let a = parse(cmd, &strings(&["--read-root", "/r", "--write-root", "/w"])).unwrap();
-            assert_eq!((a.get("--read-root"), a.get("--write-root")), (Some("/r"), Some("/w")), "{cmd}");
-        }
-    }
-
-    #[test]
-    fn the_last_root_flag_wins_whatever_its_spelling() {
-        let a = parse("mcp", &strings(&["--read-root", "/a", "--automation-read-root", "/b"])).unwrap();
-        assert_eq!(a.get("--read-root"), Some("/b"));
-        let a = parse("mcp", &strings(&["--automation-write-root", "/a", "--write-root", "/b"])).unwrap();
-        assert_eq!(a.get("--write-root"), Some("/b"));
-    }
-
-    #[test]
-    fn automation_root_flags_need_a_value_and_stay_unknown_elsewhere() {
-        assert!(parse("mcp", &strings(&["--automation-read-root"])).is_err());
-        assert!(parse("cook", &strings(&["--automation-read-root", "/r"])).is_err());
-    }
 }

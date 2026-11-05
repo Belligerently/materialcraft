@@ -1,26 +1,17 @@
 # Control protocol and MCP
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-03 · **Change:** minor (`material_export` MCP tool) · **Target:** the professional node-based material workflow
+> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (portable materials for TextureCraft) · **Target:** the professional node-based material workflow
 
 Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 
 1. **MCP** (`materialcraft-cli mcp`): headless (an in-process session, files only below
-   `--read-root` / `--write-root`, also spelled `--automation-read-root` /
-   `--automation-write-root` as in the other crafting apps; `serve` takes them too) or bridged to the running app (`--bridge <port>`).
+   `--read-root` / `--write-root`) or bridged to the running app (`--bridge <port>`).
 2. **JSON lines** (`materialcraft-cli serve`): the same methods on stdio, or on `127.0.0.1:<port>`
    behind a token.
 3. **The app's control channel** (`materialcraft --control <port>`): one JSON request per line,
    `{"id", "method", "params"}` → `{"id", "ok": true, "result"}` or `{"id", "ok": false, "error"}`.
    The first request must be `{"method":"auth","params":{"token":"…"}}` with the token from
-   `MATERIALCRAFT_CONTROL_TOKEN` (16 to 1024 printable ASCII characters) or the file
-   `<temp>/materialcraft-control-<port>.token`, a fresh random 256-bit token written after the port
-   is bound. On Unix the file is created new with mode 0600 (owner only); if an existing file there
-   cannot be replaced, the control server stays off and `MATERIALCRAFT_CONTROL_TOKEN` is the
-   alternative. Clients (`materialcraft-cli mcp --bridge`) refuse a token file that is a symlink,
-   not a regular file, not owned by them, or accessible to group or others. A connection gets one
-   authentication attempt, within 10 s; a wrong token, any other first request or malformed JSON
-   closes it. At most 16 connections are served at once. Whoever holds the token has full
-   engine-command authority, including host file access.
+   `MATERIALCRAFT_CONTROL_TOKEN` or the file `<temp>/materialcraft-control-<port>.token`.
    Set `MATERIALCRAFT_NO_PREFS=1` for scripted runs so the user's layout is left alone.
 
 ## Methods
@@ -34,8 +25,7 @@ Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 | `session.inspect` | all | package, graphs, the open graph's nodes (def, params, bindings, base, ports, cook error/size/mean/ms), wires, frames, comments, pins, exposed inputs, views, history |
 | `package.open {path}` / `package.save {path?}` | headless | workspace-scoped package I/O |
 | `bitmap.import {path, name?}` | headless | embed an image as a resource |
-| `outputs.export {dir, format?, pattern?, depth?, size?, graph?}` | headless | cook at full size and write every output |
-| `material.export {path, graph?, size?, values?}` | headless | cook and write a portable `.mcmat` (`.mcmat` appended when missing) below the write root: the workspace-scoped `file.exportMaterial` |
+| `outputs.export {dir, format?, pattern?, depth?, graph?}` | headless | cook at full size and write every output |
 | `render {view?, width?, height?, yaw?, pitch?, scene?, node?, port?, full?, tiling?, hq?, displacement?}` | headless | PNG (base64) of the 3D view or of one node; `hq` is the beauty render (displaced mesh, ray-traced AO, shadowed key light, 3×3 supersampling), `displacement` its depth in scene radii |
 | `ui.inspect` | app | UI state, the graph view rectangle, every node's screen rectangle, every port's screen position, fps, toasts |
 | `ui.menu.list` / `ui.menu.invoke {id}` | app | the menu catalog; behave like a click |
@@ -80,7 +70,7 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 | `graph.node.function` | `{id?, param, function}` drives a parameter by a function graph of the graph's inputs (dynamic parameter); `{id?, param, remove: true}` removes it |
 | `graph.preset.save` / `.apply` / `.delete` | `{name}`: store, restore or remove the current input values |
 | `graph.createFromSelection` | `{name?, ids?}`: move nodes into a sub-graph and replace them with an instance |
-| `view.2d` / `view.3d` | which node the 2D view shows, channel, tiling, histogram; scene, environment, camera, tiling, `heightScale` (how far the height output raises the mesh, in mesh radii) and `heightLevel` (the height that stays on the surface; 0 = the relief rises out of it), `normalYFlip` (interpret DirectX normal maps; default false/OpenGL), `transparency` (see through where the alpha is below one: the opacity output, else the base color's alpha), `alphaView` (show the alpha channel) |
+| `view.2d` / `view.3d` | which node the 2D view shows, channel, tiling, histogram; scene, environment, camera, tiling, parallax depth, `transparency` (see through where the alpha is below one: the opacity output, else the base color's alpha), `alphaView` (show the alpha channel) |
 | `view.3d.loadMesh` | `{path}` shows an OBJ, glTF or GLB mesh (scene `custom`) |
 | `library.list` | `{filter?, category?}`: every node with ports and parameters |
 
@@ -127,7 +117,7 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 |---|---|
 | `file.exportMaterial` | `{path, graph?, size? (px), values? {input: value}, inputs? {identifier: image path}}`: cook and write a `.mcmat`. TextureCraft runs `materialcraft-cli run source.mcraft file.exportMaterial {...}` to re-cook at its texture set's resolution with its own values and baked mesh maps |
 | `file.sendToTextureCraft` | `{graph?}`: export into TextureCraft's library folder (`Documents/TextureCraft/library`), where its shelf lists it |
-| `graph.input.bind` / `graph.input.unbind` | `{identifier, resource? \| path?, linear?}` / `{identifier}`: a preview image for an input node (a mesh map exported from TextureCraft), saved in the package; `linear: true` preserves data-map values without sRGB conversion |
+| `graph.input.bind` / `graph.input.unbind` | `{identifier, resource? \| path?}` / `{identifier}`: a preview image for an input node (a mesh map exported from TextureCraft), saved in the package |
 | `file.open` | opens `.sbs` (by content) and `.mcraft` packages, and a `.mcmat`'s source package, on its graph, with no file name. Returns `warnings`: what an SBS file holds that MaterialCraft can't read yet (missing nodes are kept as placeholders); also in `session.inspect` as `package.warnings` |
 | `file.save` | `{path?}`: SBS unless the file is `.mcraft`; `.sbs` is appended when `path` has no package extension |
 
@@ -135,9 +125,6 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 
 `session_inspect`, `command_list`, `command_run`, `command_batch`, `library_list`, `graph_new`,
 `node_add`, `node_connect`, `node_param`, `package_open`, `package_save`, `bitmap_import`,
-`outputs_export`, `material_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
+`outputs_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
 `ui_screenshot`, `ui_inspect`, `ui_menu_invoke`, `ui_input`. `package_open` opens `.mcmat` files
-too, and `material_export` `{path, graph?, size?, values?}` writes one below `--write-root` (`path` is
-relative, the parent folder must exist, `values` are exposed input values). The workspace sandbox
-still refuses `file.*` commands, so a sandboxed agent exports through the tool, not `file.exportMaterial`;
-mesh-map `inputs` stay a CLI feature.
+too; exporting one is CLI-only for now (the workspace sandbox refuses `file.*` commands).

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use materialcraft_core::{Graph, NodeId, Package, ResourceBytes};
+use materialcraft_core::{Graph, NodeId, Package};
 use materialcraft_eval::{Cache, Cooked, Options};
 use materialcraft_image::Image;
 use serde::{Deserialize, Serialize};
@@ -32,12 +32,8 @@ pub struct View3d {
     pub environment: String,
     pub env_rotation: f32,
     pub exposure: f32,
-    /// How far the height output raises the surface (white above black), in mesh radii; 0 = off.
+    /// Parallax depth of the height output (0 = off).
     pub height_scale: f32,
-    /// The height (0..1) that stays on the surface: 0 = the relief rises out of the mesh, 0.5 = centered on it.
-    pub height_level: f32,
-    /// Flip green when reading DirectX normal maps; false matches the Normal node's OpenGL default.
-    pub normal_y_flip: bool,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -59,9 +55,7 @@ impl Default for View3d {
             environment: "studio".into(),
             env_rotation: 0.0,
             exposure: 0.0,
-            height_scale: 0.04,
-            height_level: 0.0,
-            normal_y_flip: false,
+            height_scale: 0.012,
             show_axis: false,
             show_grid: false,
             transparency: true,
@@ -122,9 +116,6 @@ struct Snapshot {
     graph: usize,
     selection: Vec<NodeId>,
     label: String,
-    modified: bool,
-    dirty: bool,
-    cook_epoch: u64,
 }
 
 /// Nodes and connections copied to the clipboard (as JSON, so other sessions can paste them).
@@ -159,9 +150,6 @@ pub struct Session {
     pub cooked: Cooked,
     /// Set when the graph changed and needs cooking.
     pub dirty: bool,
-    /// Bumped by every synchronous [`Session::cook`]; a background cook that started before the
-    /// bump holds stale results and must not replace `cooked`.
-    pub cook_epoch: u64,
     /// Cooked node outputs, shared with background cooks.
     pub cache: Arc<Mutex<Cache>>,
     /// A mesh loaded for the 3D view (`scene: "custom"`): its file name and geometry.
@@ -170,9 +158,7 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    /// Snapshot and successful-edit flag for the current command group.
-    group: Option<(Snapshot, bool)>,
-    decoded: Arc<Mutex<HashMap<(u64, bool), Image>>>,
+    decoded: Arc<Mutex<HashMap<String, Image>>>,
 }
 
 impl Session {
@@ -192,13 +178,11 @@ impl Session {
             clipboard: None,
             cooked: Cooked::default(),
             dirty: true,
-            cook_epoch: 0,
             cache: Arc::new(Mutex::new(Cache::default())),
             custom_mesh: None,
             undo: Vec::new(),
             redo: Vec::new(),
             merge_key: None,
-            group: None,
             decoded: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -213,15 +197,7 @@ impl Session {
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot {
-            pkg: self.pkg.clone(),
-            graph: self.graph,
-            selection: self.selection.clone(),
-            label: label.into(),
-            modified: self.modified,
-            dirty: self.dirty,
-            cook_epoch: self.cook_epoch,
-        }
+        Snapshot { pkg: self.pkg.clone(), graph: self.graph, selection: self.selection.clone(), label: label.into() }
     }
 
     /// Run `f` as one undoable step. On error the session is restored.
@@ -233,16 +209,10 @@ impl Session {
     /// Like [`Session::edit`], but consecutive edits with the same `key` (dragging one slider)
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
-        if self.group.is_some() {
-            return self.edit_inner(label, f);
-        }
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
-            // The merged step keeps its original snapshot; restore the session if `f` fails.
-            let snap = self.snapshot(label);
             let r = f(self);
-            match &r {
-                Ok(_) => self.changed(),
-                Err(_) => self.restore(snap),
+            if r.is_ok() {
+                self.changed();
             }
             return r;
         }
@@ -253,81 +223,8 @@ impl Session {
         r
     }
 
-    /// End the current coalescing run: the next [`Session::edit_merged`] starts a new undo step.
-    /// Call it when a gesture ends (pointer release) and once per control or MCP request.
-    pub fn end_merge(&mut self) {
-        self.merge_key = None;
-    }
-
-    /// Start grouping: every edit until [`Session::end_group`] becomes one undo entry labelled
-    /// `label` (a gesture that runs several commands, such as rewiring a link). Nothing is
-    /// recorded if no edit ran. A group started inside a group is ignored.
-    pub fn begin_group(&mut self, label: &str) {
-        if self.group.is_none() {
-            self.merge_key = None;
-            self.group = Some((self.snapshot(label), false));
-        }
-    }
-
-    /// Close the group opened by [`Session::begin_group`], recording one undo entry if any edit ran.
-    pub fn end_group(&mut self) {
-        if let Some((snap, edited)) = self.group.take()
-            && edited
-        {
-            self.undo.push(snap);
-            if self.undo.len() > MAX_UNDO {
-                self.undo.remove(0);
-            }
-            self.redo.clear();
-        }
-    }
-
-    /// Run `f` as one undo entry, however many edits it makes. On error everything `f` did is
-    /// undone and nothing is recorded.
-    pub fn group<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
-        if self.group.is_some() {
-            let snap = self.snapshot(label);
-            let edited = self.group.as_ref().is_some_and(|(_, edited)| *edited);
-            let result = f(self);
-            if result.is_err() {
-                self.restore(snap);
-                if let Some((_, flag)) = self.group.as_mut() {
-                    *flag = edited;
-                }
-            }
-            return result;
-        }
-        self.begin_group(label);
-        let r = f(self);
-        match r {
-            Ok(_) => self.end_group(),
-            Err(_) => {
-                if let Some((snap, _)) = self.group.take() {
-                    self.restore(snap);
-                }
-            }
-        }
-        r
-    }
-
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         let snap = self.snapshot(label);
-        if self.group.is_some() {
-            // Only successful edits make the group an undo entry.
-            return match f(self) {
-                Ok(v) => {
-                    if let Some((_, edited)) = self.group.as_mut() {
-                        *edited = true;
-                    }
-                    self.changed();
-                    Ok(v)
-                }
-                Err(e) => {
-                    self.restore(snap);
-                    Err(e)
-                }
-            };
-        }
         match f(self) {
             Ok(v) => {
                 self.undo.push(snap);
@@ -349,8 +246,6 @@ impl Session {
         self.pkg = s.pkg;
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
-        self.modified = s.modified;
-        self.dirty = s.dirty || self.cook_epoch != s.cook_epoch;
     }
 
     /// Mark the document modified and in need of a cook.
@@ -373,7 +268,6 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
-        self.end_group();
         let s = self.undo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -385,7 +279,6 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> Option<String> {
-        self.end_group();
         let s = self.redo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -401,31 +294,22 @@ impl Session {
         self.undo.clear();
         self.redo.clear();
         self.merge_key = None;
-        self.group = None;
     }
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
-        let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
+        let res: Vec<(String, Arc<Vec<u8>>)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
-        // Free images of resources that were deleted or replaced.
-        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, _), _| res.iter().any(|(_, b)| b.content_hash() == *k));
-        move |requested: &str| {
-            let (name, linear) = materialcraft_image::split_resource_key(requested);
+        move |name: &str| {
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = (bytes.content_hash(), linear);
+            let key = format!("{name}:{}", bytes.len());
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes.as_slice(), linear).ok()?;
+            let img = materialcraft_formats::decode(bytes).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
-    }
-
-    /// Forget every decoded resource image (the package was replaced).
-    pub(crate) fn clear_decoded(&self) {
-        self.decoded.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     /// Cook the open graph now (at the preview size), on this thread.
@@ -433,17 +317,21 @@ impl Session {
         let dec = self.resource_decoder();
         let mut opts = Options::new(&dec);
         opts.max_size = self.preview_size;
-        self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
+        let cooked = {
+            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+            materialcraft_eval::cook(&self.pkg, self.graph, &opts, &mut cache)
+        };
+        self.cooked = cooked;
         self.dirty = false;
-        self.cook_epoch = self.cook_epoch.wrapping_add(1);
         &self.cooked
     }
 
-    /// Cook graph `gi` at full size, without touching the preview results.
+    /// Cook graph `gi` at full size (exports), without touching the preview results.
     pub fn cook_full(&self, gi: usize) -> Cooked {
         let dec = self.resource_decoder();
         let opts = Options::new(&dec);
-        materialcraft_eval::cook(&self.pkg, gi, &opts, &self.cache)
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        materialcraft_eval::cook(&self.pkg, gi, &opts, &mut cache)
     }
 
     /// Cook if the graph changed since the last cook.
@@ -514,7 +402,3 @@ impl Session {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "session.test.rs"]
-mod tests;

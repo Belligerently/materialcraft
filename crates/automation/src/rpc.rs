@@ -4,9 +4,8 @@
 //!
 //! Methods: the app's `ping`, `command.run {id, params?}`, `command.list {filter?}`,
 //! `session.inspect`, plus `command.batch {steps}`, `package.open {path}`, `package.save {path?}`,
-//! `bitmap.import {path, name?}`, `outputs.export {dir, format?, pattern?, depth?, graph?}`,
-//! `material.export {path, graph?, size?, values?}` (workspace-scoped versions of the engine
-//! commands; the last writes a portable `.mcmat`), `render {view?, width?, height?, yaw?,
+//! `bitmap.import {path, name?}`, `outputs.export {dir, format?, pattern?, depth?, graph?}`
+//! (workspace-scoped versions of the engine commands), `render {view?, width?, height?, yaw?,
 //! pitch?, scene?, node?, port?, full?}` (PNG base64, the shape of the app's `view.screenshot`)
 //! and `methods`.
 
@@ -19,9 +18,7 @@ use serde_json::{Value, json};
 
 use crate::budgets::json_text;
 use crate::headless::RenderOptions;
-use crate::security::{
-    AUTH_TIMEOUT, AuthDeadline, ConnectionLimiter, LineRead, MAX_BATCH_STEPS, MAX_CONNECTIONS, MAX_REQUEST_BYTES, read_bounded_line, token_matches,
-};
+use crate::security::{ConnectionLimiter, LineRead, MAX_BATCH_STEPS, MAX_CONNECTIONS, MAX_REQUEST_BYTES, read_bounded_line, token_matches};
 use crate::{AutomationError, Headless, bad};
 
 pub const METHODS: &[&str] = &[
@@ -35,7 +32,6 @@ pub const METHODS: &[&str] = &[
     "package.save",
     "bitmap.import",
     "outputs.export",
-    "material.export",
     "render",
 ];
 
@@ -88,7 +84,6 @@ impl Headless {
             "package.save" => self.save(str_of(p, "path")),
             "bitmap.import" => self.import_bitmap(required(p, "path")?, str_of(p, "name")),
             "outputs.export" => self.export(p),
-            "material.export" => self.export_material(p),
             "render" => {
                 let o = RenderOptions {
                     view: str_of(p, "view").map(str::to_string),
@@ -165,7 +160,6 @@ fn serve_connection(h: &Mutex<Headless>, stream: std::net::TcpStream, token: &st
     let mut w = stream;
     let mut line = String::new();
     let mut authed = false;
-    let mut deadline = Some(AuthDeadline::start(&w, AUTH_TIMEOUT)?);
     loop {
         match read_bounded_line(&mut r, &mut line)? {
             LineRead::Eof => return Ok(()),
@@ -184,26 +178,15 @@ fn serve_connection(h: &Mutex<Headless>, stream: std::net::TcpStream, token: &st
         if !authed {
             return write_reply(&mut w, &json!({"id": id, "ok": false, "error": "authenticate first: {\"method\":\"auth\",\"params\":{\"token\":…}}"}));
         }
-        drop(deadline.take());
         write_reply(&mut w, &json!({"id": id, "ok": true}))?;
     }
-}
-
-/// Listen on `127.0.0.1:port` (0 picks a port).
-pub fn bind_tcp(port: u16) -> Result<TcpListener, AutomationError> {
-    TcpListener::bind(("127.0.0.1", port)).map_err(|e| AutomationError::Io(format!("cannot listen on 127.0.0.1:{port}: {e}")))
 }
 
 /// Serve authenticated JSON lines on `127.0.0.1:port` (0 picks a port) with one shared
 /// session. `ready` gets the bound address.
 pub fn serve_tcp(port: u16, h: Arc<Mutex<Headless>>, token: String, ready: impl FnOnce(std::net::SocketAddr)) -> Result<(), AutomationError> {
-    let listener = bind_tcp(port)?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| AutomationError::Io(format!("cannot listen on 127.0.0.1:{port}: {e}")))?;
     ready(listener.local_addr().map_err(|e| AutomationError::Io(e.to_string()))?);
-    serve_listener(listener, h, token)
-}
-
-/// Serve authenticated JSON lines on a bound listener (see [`bind_tcp`]) with one shared session.
-pub fn serve_listener(listener: TcpListener, h: Arc<Mutex<Headless>>, token: String) -> Result<(), AutomationError> {
     let limiter = ConnectionLimiter::default();
     let token = Arc::new(token);
     for stream in listener.incoming() {
@@ -213,12 +196,10 @@ pub fn serve_listener(listener: TcpListener, h: Arc<Mutex<Headless>>, token: Str
             continue;
         };
         let (h, token) = (h.clone(), token.clone());
-        if let Err(e) = std::thread::Builder::new().name("materialcraft-rpc-client".into()).spawn(move || {
+        std::thread::spawn(move || {
             let _permit = permit;
             let _ = serve_connection(&h, stream, &token);
-        }) {
-            eprintln!("materialcraft: could not start an RPC connection: {e}");
-        }
+        });
     }
     Ok(())
 }
@@ -270,81 +251,6 @@ mod tests {
         assert!(r[5]["error"].as_str().unwrap().contains("not granted"), "{}", r[5]);
         assert_eq!(r[6]["result"]["completed"], 1);
         assert_eq!(r[6]["result"]["failed"]["index"], 1);
-    }
-
-    /// A workspace session rooted at a fresh `inside` folder, with an `outside` sibling.
-    fn workspace_session(name: &str, write: bool) -> (std::path::PathBuf, std::path::PathBuf, Mutex<Headless>) {
-        let base = std::env::temp_dir().join(format!("mc-rpc-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        let (inside, outside) = (base.join("inside"), base.join("outside"));
-        std::fs::create_dir_all(&inside).unwrap();
-        std::fs::create_dir_all(&outside).unwrap();
-        let ws = crate::AuthorizedWorkspace::new(Some(&inside), write.then_some(inside.as_path())).unwrap();
-        let h = Mutex::new(Headless::new(materialcraft_engine::sample_session(), Filesystem::Workspace(ws)));
-        (inside, outside, h)
-    }
-
-    fn call(h: &Mutex<Headless>, method: &str, params: Value) -> Result<Value, String> {
-        h.lock().unwrap().handle(method, &params).map_err(|e| e.to_string())
-    }
-
-    #[test]
-    fn material_export_writes_a_portable_material_below_the_write_root() {
-        let (inside, _, h) = workspace_session("mat-ok", true);
-        std::fs::create_dir(inside.join("out")).unwrap();
-        let r = call(&h, "material.export", json!({"path": "out/brick", "size": 32})).unwrap();
-        assert_eq!(r["path"], "out/brick.mcmat");
-        let bytes = std::fs::read(inside.join("out/brick.mcmat")).unwrap();
-        assert_eq!(r["bytes"], bytes.len());
-        let (m, source) = materialcraft_engine::formats::material::read_material(&bytes).unwrap();
-        assert_eq!(m.size, [32, 32]);
-        assert!(m.maps.iter().any(|e| e.usage == "baseColor"));
-        assert!(!source.is_empty());
-        assert_eq!(std::fs::read_dir(inside.join("out")).unwrap().count(), 1, "no temporary files left behind");
-        // An explicit extension is kept (case-insensitively) and the file can be opened again.
-        let r = call(&h, "material.export", json!({"path": "again.MCMAT", "size": 16})).unwrap();
-        assert_eq!(r["path"], "again.MCMAT");
-        assert!(call(&h, "package.open", json!({"path": "again.MCMAT"})).is_ok());
-    }
-
-    #[test]
-    fn material_export_reports_bad_requests() {
-        let (inside, _, h) = workspace_session("mat-bad", true);
-        for bad in [json!({}), json!({"path": "m", "graph": 99}), json!({"path": "m", "values": {"no_such_input": 1}})] {
-            assert!(call(&h, "material.export", bad.clone()).is_err(), "{bad}");
-        }
-        assert!(call(&h, "material.export", json!({"path": "missing/dir/m"})).is_err(), "parent must exist");
-        assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 0, "failed exports leave nothing behind");
-    }
-
-    #[test]
-    fn material_export_needs_a_write_root() {
-        let denied = session();
-        let e = call(&denied, "material.export", json!({"path": "m.mcmat"})).unwrap_err();
-        assert!(e.contains("not granted"), "{e}");
-        let (inside, _, read_only) = workspace_session("mat-readonly", false);
-        let e = call(&read_only, "material.export", json!({"path": "m.mcmat"})).unwrap_err();
-        assert!(e.contains("no write root"), "{e}");
-        assert_eq!(std::fs::read_dir(&inside).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn material_export_cannot_escape_the_write_root() {
-        let (_inside, outside, h) = workspace_session("mat-escape", true);
-        let abs = outside.join("abs.mcmat").display().to_string();
-        for p in ["../outside/m.mcmat", "a/../../outside/m.mcmat", "/tmp/m.mcmat", "a\\b.mcmat", "C:/m.mcmat", "./m.mcmat", abs.as_str()] {
-            let e = call(&h, "material.export", json!({"path": p, "size": 16}));
-            assert!(e.is_err(), "accepted {p:?}");
-        }
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&outside, _inside.join("link")).unwrap();
-            assert!(call(&h, "material.export", json!({"path": "link/m.mcmat", "size": 16})).is_err());
-        }
-        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing written outside the root");
-        // The generic command path stays closed too: host paths are still refused.
-        let e = call(&h, "command.run", json!({"id": "file.exportMaterial", "params": {"path": abs}})).unwrap_err();
-        assert!(e.contains("disabled for automation"), "{e}");
     }
 
     #[test]

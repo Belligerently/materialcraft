@@ -54,13 +54,10 @@ pub const FN_OPS: &[(&str, &str, usize, &str)] = &[
     ("sqrt", "Square root", 1, "Function"),
     ("exp", "Exponential", 1, "Function"),
     ("log", "Logarithm", 1, "Function"),
-    ("log2", "Logarithm base 2", 1, "Function"),
-    ("pow2", "2^x", 1, "Function"),
     ("sin", "Sine", 1, "Function"),
     ("cos", "Cosine", 1, "Function"),
     ("tan", "Tangent", 1, "Function"),
     ("atan2", "Arc tangent 2", 2, "Function"),
-    ("cartesian", "Cartesian", 2, "Function"),
     ("pow", "Power", 2, "Function"),
     ("min", "Minimum", 2, "Function"),
     ("max", "Maximum", 2, "Function"),
@@ -90,7 +87,6 @@ enum Op {
     Rand,
     Noise,
     IfElse,
-    Cartesian,
 }
 
 #[derive(Clone, Debug)]
@@ -110,11 +106,6 @@ pub struct Program {
 
 fn b(v: bool) -> f32 {
     if v { 1.0 } else { 0.0 }
-}
-
-/// Return zero for nonfinite arithmetic results.
-fn finite_or_zero(v: f32) -> f32 {
-    if v.is_finite() { v } else { 0.0 }
 }
 
 fn dims_of(v: &Value) -> usize {
@@ -237,13 +228,10 @@ pub fn compile(g: &FnGraph, vars: &BTreeMap<String, Value>, seed: u32) -> Result
             "sqrt" => (Op::Unary(|a| a.max(0.0).sqrt()), maxd),
             "exp" => (Op::Unary(f32::exp), maxd),
             "log" => (Op::Unary(|a| if a > 0.0 { a.ln() } else { 0.0 }), maxd),
-            "log2" => (Op::Unary(|a| if a > 0.0 { finite_or_zero(a.log2()) } else { 0.0 }), maxd),
-            "pow2" => (Op::Unary(|a| finite_or_zero(a.exp2())), maxd),
             "sin" => (Op::Unary(f32::sin), maxd),
             "cos" => (Op::Unary(f32::cos), maxd),
             "tan" => (Op::Unary(f32::tan), maxd),
             "atan2" => (Op::Binary(f32::atan2), maxd),
-            "cartesian" => (Op::Cartesian, 2),
             "pow" => (Op::Binary(|a, x| if a < 0.0 && x.fract() != 0.0 { 0.0 } else { a.powf(x) }), maxd),
             "min" => (Op::Binary(f32::min), maxd),
             "max" => (Op::Binary(f32::max), maxd),
@@ -325,16 +313,6 @@ impl Program {
                     let p = a(0);
                     [noise::perlin(p[0], p[1], 0, self.seed) * 0.5 + 0.5; 4]
                 }
-                Op::Cartesian => {
-                    // Inputs are radius and angle (radians); the result is a Float2.
-                    let (radius, angle) = (a(0)[0], a(1)[0]);
-                    if radius.is_finite() && angle.is_finite() {
-                        let (sin, cos) = angle.sin_cos();
-                        [finite_or_zero(radius * cos), finite_or_zero(radius * sin), 0.0, 0.0]
-                    } else {
-                        [0.0; 4]
-                    }
-                }
                 Op::IfElse => {
                     if a(0)[0] != 0.0 {
                         a(1)
@@ -389,71 +367,6 @@ pub(crate) fn value_processor(ctx: &Ctx) -> CookResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn evaluate_math(op: &str, values: &[Value]) -> (usize, [f32; 4]) {
-        let mut g = FnGraph::default();
-        let inputs: Vec<_> = values
-            .iter()
-            .map(|value| {
-                let op = match value {
-                    Value::Float2(_) => "const_float2",
-                    Value::Float3(_) => "const_float3",
-                    Value::Float4(_) => "const_float4",
-                    _ => "const_float",
-                };
-                g.add(op, &[], Some(value.clone()))
-            })
-            .collect();
-        g.output = Some(g.add(op, &inputs, None));
-        let p = compile(&g, &BTreeMap::new(), 0).unwrap();
-        (p.dims(), p.eval([0.0; 2], [1.0; 2], &[], true, &mut Vec::new()))
-    }
-
-    #[test]
-    fn base_two_functions_preserve_lanes_and_scalar_broadcast() {
-        let (dims, result) = evaluate_math("pow2", &[Value::Float4([-2.0, 0.0, 1.0, 3.0])]);
-        assert_eq!((dims, result), (4, [0.25, 1.0, 2.0, 8.0]));
-        let (dims, result) = evaluate_math("log2", &[Value::Float4([0.25, 1.0, 2.0, 8.0])]);
-        assert_eq!((dims, result), (4, [-2.0, 0.0, 1.0, 3.0]));
-        assert_eq!(evaluate_math("pow2", &[Value::Float(3.0)]), (1, [8.0; 4]));
-        assert_eq!(evaluate_math("log2", &[Value::Float(8.0)]), (1, [3.0; 4]));
-        for op in ["pow2", "log2"] {
-            assert_eq!(evaluate_math(op, &[Value::Float2([1.0, 2.0])]).0, 2);
-            assert_eq!(evaluate_math(op, &[Value::Float3([1.0, 2.0, 3.0])]).0, 3);
-        }
-    }
-
-    #[test]
-    fn cartesian_uses_radius_then_angle_in_radians() {
-        for (radius, angle, expected) in [
-            (2.0, 0.0, [2.0, 0.0]),
-            (2.0, std::f32::consts::FRAC_PI_2, [0.0, 2.0]),
-            (2.0, -std::f32::consts::FRAC_PI_2, [0.0, -2.0]),
-            (2.0, std::f32::consts::PI, [-2.0, 0.0]),
-            (0.0, 1.0, [0.0, 0.0]),
-        ] {
-            let (dims, result) = evaluate_math("cartesian", &[Value::Float(radius), Value::Float(angle)]);
-            assert_eq!(dims, 2);
-            assert!((result[0] - expected[0]).abs() < 1e-6);
-            assert!((result[1] - expected[1]).abs() < 1e-6);
-            assert_eq!(&result[2..], &[0.0, 0.0]);
-        }
-    }
-
-    #[test]
-    fn new_math_functions_handle_invalid_domains_and_missing_inputs() {
-        assert_eq!(evaluate_math("log2", &[Value::Float4([0.0, -1.0, f32::NAN, f32::INFINITY])]).1, [0.0; 4]);
-        assert_eq!(evaluate_math("pow2", &[Value::Float4([128.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY])]).1, [0.0; 4]);
-        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(evaluate_math("cartesian", &[Value::Float(invalid), Value::Float(0.0)]).1, [0.0; 4]);
-            assert_eq!(evaluate_math("cartesian", &[Value::Float(1.0), Value::Float(invalid)]).1, [0.0; 4]);
-        }
-        for op in ["pow2", "log2", "cartesian"] {
-            let mut g = FnGraph::default();
-            g.output = Some(g.add(op, &[], None));
-            assert!(compile(&g, &BTreeMap::new(), 0).is_err());
-        }
-    }
 
     #[test]
     fn compiles_and_runs_arithmetic() {

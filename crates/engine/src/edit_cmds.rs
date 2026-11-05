@@ -158,11 +158,9 @@ fn delete(s: &mut Session, p: &J) -> Result<J> {
 fn delete_relink(s: &mut Session, p: &J) -> Result<J> {
     let ids = ids_param(s, "edit.deleteRelink", p)?;
     s.edit("Delete and relink", |s| {
+        let g = s.graph_mut()?;
         for id in &ids {
-            // Port order comes from the node definition, not the order its wires were created.
-            let input = s.input_ports(*id).into_iter().next();
-            let g = s.graph_mut()?;
-            let src = input.and_then(|port| g.input_of(*id, &port)).map(|c| (c.from, c.from_port.clone()));
+            let src = g.connections.iter().find(|c| c.to == *id).map(|c| (c.from, c.from_port.clone()));
             let outs: Vec<(NodeId, String)> = g.connections.iter().filter(|c| c.from == *id).map(|c| (c.to, c.to_port.clone())).collect();
             g.remove_nodes(&[*id]);
             if let Some((from, port)) = src {

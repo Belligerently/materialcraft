@@ -63,33 +63,19 @@ pub fn load(app: &mut MaterialCraftApp, name: &str, bytes: Vec<u8>, bitmap: bool
         return;
     }
     if bitmap || materialcraft_engine::formats::IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-        // Import, add the node and bind it: one undo entry.
-        app.session.begin_group("Import bitmap");
         match materialcraft_engine::file_cmds::add_resource(&mut app.session, name, bytes, None) {
             Ok(res) => {
-                crate::graph_view::add_bitmap_node(app, &res);
+                crate::graph_view::add_node_near_selection(app, "bitmap");
+                if let Some(id) = app.session.selection.last().copied() {
+                    app.run("graph.node.param", serde_json::json!({"id": id.0, "param": "resource", "value": res}));
+                }
                 app.toast(format!("{} {res}", tr("Imported")), false);
             }
             Err(e) => app.toast(format!("{} {name}: {e}", tr("Couldn't import")), true),
         }
-        app.session.end_group();
         return;
     }
-    if app.ui.windows.unsaved.is_some() {
-        return;
-    }
-    // Opening a package replaces the open one: ask first when it has unsaved changes.
-    if crate::unsaved::needs_confirmation(&app.session) {
-        app.pending_load = Some((name.to_string(), bytes));
-        crate::unsaved::guard(app, crate::unsaved::Guarded::LoadBytes { name: name.to_string() });
-        return;
-    }
-    load_now(app, name, &bytes);
-}
-
-/// Open a package from bytes, replacing the open one (already confirmed).
-pub fn load_now(app: &mut MaterialCraftApp, name: &str, bytes: &[u8]) {
-    match materialcraft_engine::file_cmds::open_bytes(&mut app.session, bytes, Some(name.to_string())) {
+    match materialcraft_engine::file_cmds::open_bytes(&mut app.session, &bytes, Some(name.to_string())) {
         Ok(()) => {
             app.ui.frame_all = true;
             app.toast(format!("{} {name}", tr("Opened")), false);
@@ -211,7 +197,7 @@ mod web {
     /// Export outputs: one file downloads as is, several as `<graph>_outputs.zip`.
     pub fn export(app: &mut MaterialCraftApp, params: &serde_json::Value) {
         let result = materialcraft_engine::file_cmds::export_params(&app.session, params)
-            .and_then(|(gi, ext, pattern, depth, size)| materialcraft_engine::file_cmds::export_outputs(&app.session, gi, &ext, &pattern, depth, size))
+            .and_then(|(gi, ext, pattern, depth)| materialcraft_engine::file_cmds::export_outputs(&app.session, gi, &ext, &pattern, depth))
             .map_err(|e| e.to_string())
             .and_then(|files| {
                 let files: Vec<(String, Vec<u8>)> = files.into_iter().map(|f| (f.file, f.bytes)).collect();
@@ -258,30 +244,6 @@ mod web {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn app(modified: bool) -> MaterialCraftApp {
-        let mut s = materialcraft_engine::sample_session();
-        s.modified = modified;
-        MaterialCraftApp::headless(s, crate::state::UiState::default())
-    }
-
-    #[test]
-    fn a_package_picked_over_unsaved_work_is_held_not_loaded() {
-        let mut app = app(true);
-        let before = app.session.pkg.name.clone();
-        load(&mut app, "other.sbs", b"not a package".to_vec(), false);
-        assert_eq!(app.ui.windows.unsaved, Some(crate::unsaved::Guarded::LoadBytes { name: "other.sbs".into() }));
-        assert_eq!(app.pending_load.as_ref().map(|(n, _)| n.as_str()), Some("other.sbs"));
-        assert_eq!(app.session.pkg.name, before);
-        assert!(app.toasts.is_empty());
-    }
-
-    #[test]
-    fn an_image_import_is_not_a_replacement_and_never_asks() {
-        let mut app = app(true);
-        load(&mut app, "x.png", b"junk".to_vec(), true);
-        assert!(app.ui.windows.unsaved.is_none());
-    }
 
     #[test]
     fn zip_round_trips() {

@@ -43,10 +43,10 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let node = app.session.selection.last().and_then(|id| app.session.graph().ok()?.node(*id).ok().cloned());
-        ui.push_id((app.session.graph, node.as_ref().map(|n| n.id)), |ui| match node {
+        match node {
             Some(n) => node_props(app, ui, &n),
             None => graph_props(app, ui),
-        });
+        }
     });
 }
 
