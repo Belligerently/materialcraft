@@ -199,12 +199,14 @@ pub fn error_image(w: u32, h: u32) -> Image {
     Image::filled(w, h, Kind::Color, [1.0, 0.0, 1.0, 1.0])
 }
 
-/// A fingerprint of an input image: its size and 4096 evenly strided values. (Its address is no
-/// key: a freed image's memory comes back for the next one.)
-// shortcut: a sample, not every value; hash the whole image if inputs that differ only between samples ever collide.
+/// Fingerprint the complete input, including its shape and channel count.
 fn image_key(i: &Image) -> u64 {
-    let step = (i.data.len() / 4096).max(1);
-    hash_of(&(i.w, i.h, i.data.iter().step_by(step).map(|v| v.to_bits()).collect::<Vec<u32>>()))
+    let mut h = DefaultHasher::new();
+    (i.w, i.h, i.kind.channels(), i.data.len()).hash(&mut h);
+    for value in i.data.iter() {
+        value.to_bits().hash(&mut h);
+    }
+    h.finish()
 }
 
 fn hash_of(v: &impl Hash) -> u64 {
@@ -297,6 +299,7 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &Mutex<Cache>) -> C
     for (k, v) in &opts.overrides {
         vars.insert(k.clone(), v.clone());
     }
+    let mut nominal_sizes = BTreeMap::new();
     for id in order {
         if needed.as_ref().is_some_and(|s| !s.contains(&id)) {
             continue;
@@ -306,7 +309,8 @@ pub fn cook(pkg: &Package, gi: usize, opts: &Options, cache: &Mutex<Cache>) -> C
             break;
         }
         let Ok(node) = graph.node(id) else { continue };
-        let r = cook_node(pkg, gi, graph, node, &out, &vars, opts, cache);
+        let (r, nominal) = cook_node(pkg, gi, graph, node, &out, &nominal_sizes, &vars, opts, cache);
+        nominal_sizes.insert(id, nominal);
         out.nodes.insert(id, r);
     }
     out.ms = (now_ms() - t0) as f32;
@@ -364,27 +368,35 @@ fn cook_node(
     graph: &Graph,
     node: &Node,
     done: &Cooked,
+    nominal_sizes: &BTreeMap<NodeId, (u32, u32)>,
     vars: &BTreeMap<String, Value>,
     opts: &Options,
     cache: &Mutex<Cache>,
-) -> NodeResult {
+) -> (NodeResult, (u32, u32)) {
     let (in_ports, out_ports) = ports(pkg, node);
     let def = find(&node.def);
     // Gather inputs by port order, with their keys.
     let mut inputs: Vec<Option<Image>> = Vec::with_capacity(in_ports.len());
     let mut in_keys: Vec<u64> = Vec::with_capacity(in_ports.len());
+    let mut first_nominal = None;
     for p in &in_ports {
         let src = graph.input_of(node.id, &p.id).and_then(|c| {
             let r = done.nodes.get(&c.from)?;
             let from = graph.node(c.from).ok()?;
             let idx = ports(pkg, from).1.iter().position(|o| o.id == c.from_port)?;
-            Some((r.outputs.get(idx)?.clone(), r.key ^ hash_of(&idx)))
+            let image = r.outputs.get(idx)?.clone();
+            let nominal = nominal_sizes.get(&c.from).copied().unwrap_or((image.w, image.h));
+            Some((image, r.key ^ hash_of(&idx), nominal))
         });
         in_keys.push(src.as_ref().map_or(0, |s| s.1));
+        if first_nominal.is_none() {
+            first_nominal = src.as_ref().map(|s| s.2);
+        }
         inputs.push(src.map(|s| s.0));
     }
-    let first = inputs.iter().flatten().next().map(|i| (i.w, i.h));
-    let (w, h) = node_size(graph, def, node, first, opts.max_size);
+    let nominal =
+        if node.disabled { first_nominal.unwrap_or_else(|| node_size(graph, def, node, None, None)) } else { node_size(graph, def, node, first_nominal, None) };
+    let (w, h) = node_size(graph, def, node, first_nominal, opts.max_size);
     let fail = |msg: String, key: u64| NodeResult {
         outputs: Arc::new(vec![error_image(w, h); out_ports.len().max(1)]),
         error: Some(msg),
@@ -415,7 +427,7 @@ fn cook_node(
                     params.insert(param.clone(), c);
                 }
             }
-            Err(e) => return fail(format!("function of `{param}`: {e}"), 0),
+            Err(e) => return (fail(format!("function of `{param}`: {e}"), 0), nominal),
         }
     }
     // Hard limits also apply after bindings and dynamic functions.
@@ -443,7 +455,7 @@ fn cook_node(
         serde_json::to_string(&vars_read(&params, vars)).unwrap_or_default(),
     ));
     if let Some(v) = lock(cache).get(key) {
-        return NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true };
+        return (NodeResult { outputs: v, error: None, ms: 0.0, key, cached: true }, nominal);
     }
     let t0 = now_ms();
     let result: Result<Vec<Image>, String> = if node.disabled {
@@ -462,7 +474,7 @@ fn cook_node(
     } else {
         Err(format!("unknown node `{}`", node.def))
     };
-    match result {
+    let result = match result {
         Ok(imgs) if imgs.len() == out_ports.len().max(1) || out_ports.is_empty() => {
             let v = Arc::new(imgs);
             lock(cache).put(key, v.clone());
@@ -470,7 +482,8 @@ fn cook_node(
         }
         Ok(imgs) => fail(format!("`{}` made {} images for {} outputs", node.def, imgs.len(), out_ports.len()), key),
         Err(e) => fail(e, key),
-    }
+    };
+    (result, nominal)
 }
 
 /// Whether graph `from` reaches `target`, without recursive stack growth.
@@ -623,6 +636,64 @@ mod tests {
         let c = cook(&p, 0, &opts, &cache);
         assert_eq!(c.image(out, 0).map(|i| i.w), Some(128));
         assert!(c.nodes[&bad].error.is_some());
+    }
+
+    #[test]
+    fn input_image_cache_key_covers_every_pixel() {
+        let a = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+        let mut b = a.clone();
+        Arc::make_mut(&mut b.data)[1] = 1.0;
+        assert_ne!(image_key(&a), image_key(&b));
+    }
+
+    #[test]
+    fn preview_cap_does_not_compound_downscaling() {
+        let (mut p, noise, blur, out) = sample();
+        p.graphs[0].size = [10, 10];
+        p.graphs[0].node_mut(blur).unwrap().base.size = [-3, -3];
+        let cache = Mutex::new(Cache::default());
+        let mut opts = Options::new(&no_res);
+        opts.max_size = Some(512);
+        let c = cook(&p, 0, &opts, &cache);
+        assert_eq!(c.image(noise, 0).map(|i| (i.w, i.h)), Some((512, 512)));
+        assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((128, 128)));
+        assert_eq!(c.image(out, 0).map(|i| (i.w, i.h)), Some((128, 128)));
+    }
+
+    #[test]
+    fn preview_cap_uses_nominal_dimensions_through_bypassed_nodes() {
+        let (mut p, noise, blur, out) = sample();
+        p.graphs[0].size = [13, 12];
+        p.graphs[0].node_mut(blur).unwrap().disabled = true;
+        p.graphs[0].node_mut(out).unwrap().base.size = [1, 0];
+        let cache = Mutex::new(Cache::default());
+        let mut opts = Options::new(&no_res);
+        opts.max_size = Some(128);
+        let c = cook(&p, 0, &opts, &cache);
+        assert_eq!(c.image(noise, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+        assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+        assert_eq!(c.image(out, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+    }
+
+    #[test]
+    fn changed_unsampled_input_recooks() {
+        let mut g = Graph::new("g");
+        g.size = [7, 7];
+        let input = g.add_node("input_grayscale", [0.0, 0.0]);
+        let mut p = Package::new("p");
+        p.graphs.push(g);
+        let mut opts = Options::new(&no_res);
+        let image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+        opts.inputs.insert("input".into(), image.clone());
+        let cache = Mutex::new(Cache::default());
+        let first = cook(&p, 0, &opts, &cache);
+        assert!(!first.nodes[&input].cached);
+        let mut changed = image;
+        Arc::make_mut(&mut changed.data)[1] = 1.0;
+        opts.inputs.insert("input".into(), changed);
+        let second = cook(&p, 0, &opts, &cache);
+        assert!(!second.nodes[&input].cached);
+        assert_eq!(second.image(input, 0).unwrap().data[1], 1.0);
     }
 
     #[test]
