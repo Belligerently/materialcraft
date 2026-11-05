@@ -839,8 +839,9 @@ fn normal_to_height(ctx: &Ctx) -> CookResult {
             cur = Image::generate(sw, sh, Kind::Gray, |x, y| {
                 let (x, y) = (x as i64, y as i64);
                 let nb = prev.get(x - 1, y, true)[0] + prev.get(x + 1, y, true)[0] + prev.get(x, y - 1, true)[0] + prev.get(x, y + 1, true)[0];
-                // Divergence of the gradient field (pixels of this level).
-                let div = (gxs.get(x + 1, y, true)[0] - gxs.get(x - 1, y, true)[0] + gys.get(x, y + 1, true)[0] - gys.get(x, y - 1, true)[0]) * 0.5 / scale;
+                // Divergence of the slope field in pixels of this level: the slopes are per
+                // full-size pixel and one pixel here spans `scale` of them, so multiply.
+                let div = (gxs.get(x + 1, y, true)[0] - gxs.get(x - 1, y, true)[0] + gys.get(x, y + 1, true)[0] - gys.get(x, y - 1, true)[0]) * 0.5 * scale;
                 [(nb - div) * 0.25, 0.0, 0.0, 0.0]
             });
         }
