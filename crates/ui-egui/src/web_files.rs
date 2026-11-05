@@ -63,16 +63,16 @@ pub fn load(app: &mut MaterialCraftApp, name: &str, bytes: Vec<u8>, bitmap: bool
         return;
     }
     if bitmap || materialcraft_engine::formats::IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+        // Import, add the node and bind it: one undo entry.
+        app.session.begin_group("Import bitmap");
         match materialcraft_engine::file_cmds::add_resource(&mut app.session, name, bytes, None) {
             Ok(res) => {
-                crate::graph_view::add_node_near_selection(app, "bitmap");
-                if let Some(id) = app.session.selection.last().copied() {
-                    app.run("graph.node.param", serde_json::json!({"id": id.0, "param": "resource", "value": res}));
-                }
+                crate::graph_view::add_bitmap_node(app, &res);
                 app.toast(format!("{} {res}", tr("Imported")), false);
             }
             Err(e) => app.toast(format!("{} {name}: {e}", tr("Couldn't import")), true),
         }
+        app.session.end_group();
         return;
     }
     if app.ui.windows.unsaved.is_some() {
