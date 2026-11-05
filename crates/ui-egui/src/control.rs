@@ -225,7 +225,7 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         "command.run" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
-            match materialcraft_engine::execute(&mut app.session, id, &params) {
+            match crate::cook::execute_guarded(&mut app.session, id, &params) {
                 Ok(v) => {
                     if id == "view.previewSize" {
                         app.ui.prefs.preview_size = app.session.preview_size.unwrap_or(0);

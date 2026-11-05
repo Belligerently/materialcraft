@@ -16,6 +16,9 @@ pub mod function_editor;
 pub mod graph_view;
 pub mod i18n;
 pub mod levels_editor;
+#[cfg(test)]
+#[path = "lib.test.rs"]
+mod lib_test;
 pub mod library;
 pub mod menus;
 pub mod properties;
@@ -134,7 +137,7 @@ impl MaterialCraftApp {
 
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
-        match materialcraft_engine::execute(&mut self.session, id, &params) {
+        match cook::execute_guarded(&mut self.session, id, &params) {
             Ok(v) => {
                 if id == "view.previewSize" {
                     self.ui.prefs.preview_size = self.session.preview_size.unwrap_or(0);
@@ -142,7 +145,7 @@ impl MaterialCraftApp {
                 Some(v)
             }
             Err(e) => {
-                self.toast(e.to_string(), true);
+                self.toast(e, true);
                 None
             }
         }
