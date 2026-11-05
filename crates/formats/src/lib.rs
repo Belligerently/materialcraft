@@ -171,33 +171,31 @@ pub fn safe_file_name(name: &str) -> String {
     if cleaned.is_empty() { "resource".into() } else { cleaned }
 }
 
-/// Decode image file bytes into a float image. 8/16-bit color is sRGB-decoded to linear, unless
-/// `linear` is set (a data map such as a normal map: the file's values are kept as stored);
-/// float files and grayscale files are never converted.
+/// Decode to float pixels, preserving data-map values when `linear` is true.
+/// Otherwise 8/16-bit color is sRGB-decoded; float and grayscale files keep their values.
 pub fn decode(bytes: &[u8], linear: bool) -> Result<Image> {
-    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| FormatError::Image(e.to_string()))?;
-    if reader.format().is_none() {
-        // TGA has no signature: try it when the format cannot be guessed.
-        reader.set_format(image::ImageFormat::Tga);
-    }
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_SIDE);
-    limits.max_image_height = Some(MAX_SIDE);
-    limits.max_alloc = Some(1 << 30);
-    reader.limits(limits);
-    let img = guard(
-        || {
-            reader.decode().map_err(|e| match e {
-                image::ImageError::Limits(_) => FormatError::Image(format!("image is larger than {MAX_SIDE} pixels")),
-                e => FormatError::Image(e.to_string()),
-            })
-        },
-        || FormatError::Image("the decoder failed on this file".into()),
-    )?;
-    let (w, h) = (img.width(), img.height());
+    let open = || -> Result<image::ImageReader<Cursor<&[u8]>>> {
+        let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().map_err(|e| FormatError::Image(e.to_string()))?;
+        if reader.format().is_none() {
+            reader.set_format(image::ImageFormat::Tga);
+        }
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_SIDE);
+        limits.max_image_height = Some(MAX_SIDE);
+        limits.max_alloc = Some(1 << 30);
+        reader.limits(limits);
+        Ok(reader)
+    };
+    let failed = || FormatError::Image("the decoder failed on this file".into());
+    let image_error = |e| match e {
+        image::ImageError::Limits(_) => FormatError::Image(format!("image is larger than {MAX_SIDE} pixels")),
+        e => FormatError::Image(e.to_string()),
+    };
+    let (w, h) = guard(|| open()?.into_dimensions().map_err(image_error), failed)?;
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE {
         return Err(FormatError::Image(format!("{w}x{h} is outside 1..={MAX_SIDE} pixels")));
     }
+    let img = guard(|| open()?.decode().map_err(image_error), failed)?;
     let gray = matches!(img.color(), image::ColorType::L8 | image::ColorType::L16 | image::ColorType::La8 | image::ColorType::La16);
     let float = matches!(img.color(), image::ColorType::Rgb32F | image::ColorType::Rgba32F);
     if gray {
@@ -314,12 +312,34 @@ pub fn output_name(pattern: &str, graph: &str, identifier: &str, usage: &str) ->
 /// a truncated file behind.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("out")));
-    std::fs::write(&tmp, bytes).map_err(|e| FormatError::Io(format!("{}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        FormatError::Io(format!("{}: {e}", path.display()))
-    })
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    write_atomic_counted(path, bytes, &COUNTER)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_atomic_counted(path: &std::path::Path, bytes: &[u8], counter: &std::sync::atomic::AtomicU64) -> Result<()> {
+    for _ in 0..32 {
+        let unique = format!(".{}.{}.tmp", std::process::id(), counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "out".into());
+        name.push(unique);
+        let tmp = path.with_file_name(name);
+        let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(FormatError::Io(format!("{}: {e}", tmp.display()))),
+        };
+        let result = f.write_all(bytes).and_then(|()| f.sync_all());
+        drop(f);
+        if let Err(e) = result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(FormatError::Io(format!("{}: {e}", tmp.display())));
+        }
+        return std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            FormatError::Io(format!("{}: {e}", path.display()))
+        });
+    }
+    Err(FormatError::Io("could not create an exclusive temporary save file after 32 attempts".into()))
 }
 
 #[cfg(test)]
@@ -431,6 +451,71 @@ mod tests {
         assert!((data.get(0, 0, false)[0] - 0.5).abs() < 0.01);
         let color = decode(&png, false).unwrap();
         assert!((color.get(0, 0, false)[0] - 0.214).abs() < 0.01);
+    }
+
+    /// A valid 1-bit grayscale PNG of `side` x `side` zero pixels (a few hundred KB when deflated).
+    fn blank_png(side: u32) -> Vec<u8> {
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend((data.len() as u32).to_be_bytes());
+            out.extend(kind);
+            out.extend(data);
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend(crc.sum().to_be_bytes());
+        }
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        let row = vec![0u8; 1 + (side as usize).div_ceil(8)];
+        for _ in 0..side {
+            z.write_all(&row).unwrap();
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend(side.to_be_bytes());
+        ihdr.extend([1, 0, 0, 0, 0]);
+        let mut png = [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'].to_vec();
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &z.finish().unwrap());
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    #[test]
+    fn oversized_images_are_rejected_from_the_header_before_decoding() {
+        // 30000 x 30000 is 900 MB as 8-bit gray: the size message (not an allocation failure
+        // from the decoder) proves the header was checked before any pixels were decoded.
+        let e = decode(&blank_png(30_000), false).unwrap_err().to_string();
+        assert!(e.contains("pixels"), "{e}");
+        assert!(decode(&blank_png(64), false).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_save_never_follows_or_removes_a_planted_temp_symlink() {
+        let dir = std::env::temp_dir().join(format!("mc-atomic-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.mcraft");
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        let planted = dir.join(format!("a.mcraft.{}.0.tmp", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+        write_atomic_counted(&path, b"saved", &std::sync::atomic::AtomicU64::new(0)).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert!(planted.is_symlink());
+        assert_eq!(std::fs::read(&path).unwrap(), b"saved");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_temp_file_and_overwrites() {
+        let dir = std::env::temp_dir().join(format!("mc-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.mcraft");
+        write_atomic(&path, b"one").unwrap();
+        write_atomic(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
