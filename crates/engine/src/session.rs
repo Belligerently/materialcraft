@@ -124,6 +124,7 @@ struct Snapshot {
     label: String,
     modified: bool,
     dirty: bool,
+    cook_epoch: u64,
 }
 
 /// Nodes and connections copied to the clipboard (as JSON, so other sessions can paste them).
@@ -169,6 +170,8 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
+    /// Snapshot and successful-edit flag for the current command group.
+    group: Option<(Snapshot, bool)>,
     decoded: Arc<Mutex<HashMap<(u64, bool), Image>>>,
 }
 
@@ -195,6 +198,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             merge_key: None,
+            group: None,
             decoded: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -216,6 +220,7 @@ impl Session {
             label: label.into(),
             modified: self.modified,
             dirty: self.dirty,
+            cook_epoch: self.cook_epoch,
         }
     }
 
@@ -228,6 +233,9 @@ impl Session {
     /// Like [`Session::edit`], but consecutive edits with the same `key` (dragging one slider)
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            return self.edit_inner(label, f);
+        }
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
             // The merged step keeps its original snapshot; restore the session if `f` fails.
             let snap = self.snapshot(label);
@@ -251,8 +259,75 @@ impl Session {
         self.merge_key = None;
     }
 
+    /// Start grouping: every edit until [`Session::end_group`] becomes one undo entry labelled
+    /// `label` (a gesture that runs several commands, such as rewiring a link). Nothing is
+    /// recorded if no edit ran. A group started inside a group is ignored.
+    pub fn begin_group(&mut self, label: &str) {
+        if self.group.is_none() {
+            self.merge_key = None;
+            self.group = Some((self.snapshot(label), false));
+        }
+    }
+
+    /// Close the group opened by [`Session::begin_group`], recording one undo entry if any edit ran.
+    pub fn end_group(&mut self) {
+        if let Some((snap, edited)) = self.group.take()
+            && edited
+        {
+            self.undo.push(snap);
+            if self.undo.len() > MAX_UNDO {
+                self.undo.remove(0);
+            }
+            self.redo.clear();
+        }
+    }
+
+    /// Run `f` as one undo entry, however many edits it makes. On error everything `f` did is
+    /// undone and nothing is recorded.
+    pub fn group<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            let snap = self.snapshot(label);
+            let edited = self.group.as_ref().is_some_and(|(_, edited)| *edited);
+            let result = f(self);
+            if result.is_err() {
+                self.restore(snap);
+                if let Some((_, flag)) = self.group.as_mut() {
+                    *flag = edited;
+                }
+            }
+            return result;
+        }
+        self.begin_group(label);
+        let r = f(self);
+        match r {
+            Ok(_) => self.end_group(),
+            Err(_) => {
+                if let Some((snap, _)) = self.group.take() {
+                    self.restore(snap);
+                }
+            }
+        }
+        r
+    }
+
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         let snap = self.snapshot(label);
+        if self.group.is_some() {
+            // Only successful edits make the group an undo entry.
+            return match f(self) {
+                Ok(v) => {
+                    if let Some((_, edited)) = self.group.as_mut() {
+                        *edited = true;
+                    }
+                    self.changed();
+                    Ok(v)
+                }
+                Err(e) => {
+                    self.restore(snap);
+                    Err(e)
+                }
+            };
+        }
         match f(self) {
             Ok(v) => {
                 self.undo.push(snap);
@@ -275,7 +350,7 @@ impl Session {
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
         self.modified = s.modified;
-        self.dirty = s.dirty;
+        self.dirty = s.dirty || self.cook_epoch != s.cook_epoch;
     }
 
     /// Mark the document modified and in need of a cook.
@@ -298,6 +373,7 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.undo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -309,6 +385,7 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.redo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -324,6 +401,7 @@ impl Session {
         self.undo.clear();
         self.redo.clear();
         self.merge_key = None;
+        self.group = None;
     }
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).

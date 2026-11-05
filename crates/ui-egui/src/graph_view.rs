@@ -377,6 +377,58 @@ pub fn add_node_near_selection(app: &mut MaterialCraftApp, def: &str) {
     app.run("graph.node.add", params);
 }
 
+/// Add a Bitmap node (wired to the selection when that makes sense) showing `resource`.
+pub fn add_bitmap_node(app: &mut MaterialCraftApp, resource: &str) {
+    add_node_near_selection(app, "bitmap");
+    if let Some(id) = app.session.selection.last().copied() {
+        app.run("graph.node.param", json!({"id": id.0, "param": "resource", "value": resource}));
+    }
+}
+
+/// File ▸ Import bitmap from a path: import, add the node and bind it, as one undo entry.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn import_bitmap_file(app: &mut MaterialCraftApp, path: &str) {
+    app.session.begin_group("Import bitmap");
+    if let Some(r) = app.run("file.importBitmap", json!({"path": path})) {
+        add_bitmap_node(app, r["name"].as_str().unwrap_or_default());
+    }
+    app.session.end_group();
+}
+
+fn run_gesture(app: &mut MaterialCraftApp, label: &str, commands: &[(&str, serde_json::Value)]) {
+    let result = app.session.group(label, |session| {
+        for (id, params) in commands {
+            crate::cook::execute_guarded(session, id, params).map_err(materialcraft_engine::EngineError::Other)?;
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        app.toast(error.to_string(), true);
+    }
+}
+
+/// Finish dragging a wire onto input `to_port` of `to`: connect it, first removing the link it
+/// was pulled off (`detached`). The gesture is one undo entry.
+fn rewire(app: &mut MaterialCraftApp, from: &(NodeId, String), detached: Option<&(NodeId, String)>, to: NodeId, to_port: &str) {
+    let mut commands = Vec::new();
+    if let Some((n, p)) = detached
+        && (*n != to || p != to_port)
+    {
+        commands.push(("graph.disconnect", json!({"to": n.0, "toPort": p})));
+    }
+    commands.push(("graph.connect", json!({"from": from.0.0, "fromPort": from.1, "to": to.0, "toPort": to_port})));
+    run_gesture(app, "Connect", &commands);
+}
+
+/// Finish dragging a frame: set its rectangle and move the nodes it carries, as one undo entry.
+fn move_frame(app: &mut MaterialCraftApp, id: u64, rect: [f32; 4], nodes: &[NodeId], delta: Vec2) {
+    let mut commands = vec![("graph.frame.edit", json!({"id": id, "rect": rect}))];
+    if !nodes.is_empty() {
+        commands.push(("graph.node.move", json!({"ids": nodes.iter().map(|n| n.0).collect::<Vec<_>>(), "by": [delta.x, delta.y]})));
+    }
+    run_gesture(app, "Move frame", &commands);
+}
+
 /// Frame the graph (or the selection) in the view.
 fn frame(app: &mut MaterialCraftApp, view: Rect, only_selection: bool) {
     let thumbs = app.ui.prefs.thumbnails;
@@ -945,14 +997,7 @@ fn handle_input(
             Drag::Wire { from, detached } => {
                 let target = pointer.and_then(|p| nearest_port(&app.graph.ports, p, 12.0)).filter(|h| !h.output).cloned();
                 match target {
-                    Some(t) => {
-                        if let Some((n, p)) = &detached
-                            && (*n != t.node || *p != t.port)
-                        {
-                            app.run("graph.disconnect", json!({"to": n.0, "toPort": p}));
-                        }
-                        app.run("graph.connect", json!({"from": from.0.0, "fromPort": from.1, "to": t.node.0, "toPort": t.port}));
-                    }
+                    Some(t) => rewire(app, &from, detached.as_ref(), t.node, &t.port),
                     None => {
                         if let Some((n, p)) = &detached {
                             app.run("graph.disconnect", json!({"to": n.0, "toPort": p}));
@@ -979,10 +1024,7 @@ fn handle_input(
                     } else {
                         [f.rect[0] + delta.x, f.rect[1] + delta.y, f.rect[2], f.rect[3]]
                     };
-                    app.run("graph.frame.edit", json!({"id": id, "rect": r}));
-                    if !nodes.is_empty() {
-                        app.run("graph.node.move", json!({"ids": nodes.iter().map(|n| n.0).collect::<Vec<_>>(), "by": [delta.x, delta.y]}));
-                    }
+                    move_frame(app, id, r, &nodes, delta);
                 }
             }
             Drag::Comment { id, delta } => {
@@ -1350,6 +1392,57 @@ fn canvas_menu(app: &mut MaterialCraftApp, ui: &mut Ui, at: Pos2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_rewire_keeps_the_original_connection_and_history() {
+        let mut app = empty_app();
+        let source = app.run("graph.node.add", json!({"def": "uniform"})).unwrap()["id"].as_u64().unwrap();
+        let target = app.run("graph.node.add", json!({"def": "levels"})).unwrap()["id"].as_u64().unwrap();
+        app.run("graph.connect", json!({"from": source, "to": target, "toPort": "input"})).unwrap();
+        let before = app.session.graph().unwrap().connections.clone();
+        let history = app.session.history();
+        rewire(&mut app, &(NodeId(source), "output".into()), Some(&(NodeId(target), "input".into())), NodeId(target), "missing");
+        assert_eq!(app.session.graph().unwrap().connections, before);
+        assert_eq!(app.session.history(), history);
+        assert!(app.toasts.iter().any(|t| t.error));
+    }
+
+    fn empty_app() -> MaterialCraftApp {
+        let mut app = MaterialCraftApp::headless(materialcraft_engine::sample_session(), crate::UiState::default());
+        app.run("file.new", json!({"template": "empty"}));
+        app
+    }
+
+    fn add(app: &mut MaterialCraftApp, def: &str) -> NodeId {
+        NodeId(app.run("graph.node.add", json!({"def": def})).and_then(|v| v["id"].as_u64()).unwrap())
+    }
+
+    #[test]
+    fn rewiring_a_dragged_link_is_one_undo_entry() {
+        let mut app = empty_app();
+        let (a, b, c) = (add(&mut app, "clouds_1"), add(&mut app, "levels"), add(&mut app, "levels"));
+        app.run("graph.connect", json!({"from": a.0, "fromPort": "output", "to": b.0, "toPort": "input"}));
+        let base = app.session.history().len();
+        rewire(&mut app, &(a, "output".to_string()), Some(&(b, "input".to_string())), c, "input");
+        assert_eq!(app.session.history().len(), base + 1, "{:?}", app.session.history());
+        let conns = &app.session.graph().unwrap().connections;
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].to, c);
+        app.session.undo();
+        assert_eq!(app.session.graph().unwrap().connections[0].to, b, "one undo restores the old link");
+    }
+
+    #[test]
+    fn dragging_a_frame_with_its_nodes_is_one_undo_entry() {
+        let mut app = empty_app();
+        let n = add(&mut app, "levels");
+        let id = app.run("graph.frame.add", json!({"rect": [0, 0, 300, 200]})).and_then(|v| v["id"].as_u64()).unwrap();
+        let base = app.session.history().len();
+        move_frame(&mut app, id, [10.0, 10.0, 300.0, 200.0], &[n], vec2(10.0, 10.0));
+        assert_eq!(app.session.history().len(), base + 1, "{:?}", app.session.history());
+        app.session.undo();
+        assert_eq!(app.session.graph().unwrap().frames[0].rect, [0.0, 0.0, 300.0, 200.0]);
+    }
 
     /// The whole app in an offscreen egui context, driven one frame at a time.
     struct Frames {
