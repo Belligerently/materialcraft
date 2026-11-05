@@ -23,7 +23,7 @@ L2  formats   .sbs packages (the main format, sbs.rs), .mcraft packages (zip: pa
               decode, texture encode (PNG/JPEG/TGA/TIFF/BMP/WEBP/EXR/HDR at 8/16/32 bits), atomic writes
 L3  engine    Session (package, open graph, selection, 2D/3D view state, snapshot undo, cache),
               the command registry, inspect, sample materials and graph templates
-L3  render    the 3D view: BVH ray casts, parallax occlusion from the height output, GGX PBR with
+L3  render    the 3D view: BVH ray casts, the height output displacing a subdivided mesh, GGX PBR with
               prefiltered IBL + SH diffuse, alpha transparency (layered ray compositing) and an
               alpha channel view, ACES tone mapping; procedural environments
 L4  automation MCP server (rmcp), JSON-lines RPC (stdio/TCP with token), bridge client, workspace sandbox

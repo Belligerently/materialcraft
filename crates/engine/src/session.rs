@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use materialcraft_core::{Graph, NodeId, Package};
+use materialcraft_core::{Graph, NodeId, Package, ResourceBytes};
 use materialcraft_eval::{Cache, Cooked, Options};
 use materialcraft_image::Image;
 use serde::{Deserialize, Serialize};
@@ -32,8 +32,10 @@ pub struct View3d {
     pub environment: String,
     pub env_rotation: f32,
     pub exposure: f32,
-    /// Parallax depth of the height output (0 = off).
+    /// How far the height output raises the surface (white above black), in mesh radii; 0 = off.
     pub height_scale: f32,
+    /// The height (0..1) that stays on the surface: 0 = the relief rises out of the mesh, 0.5 = centered on it.
+    pub height_level: f32,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -55,7 +57,8 @@ impl Default for View3d {
             environment: "studio".into(),
             env_rotation: 0.0,
             exposure: 0.0,
-            height_scale: 0.012,
+            height_scale: 0.04,
+            height_level: 0.0,
             show_axis: false,
             show_grid: false,
             transparency: true,
@@ -158,7 +161,7 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    decoded: Arc<Mutex<HashMap<String, Image>>>,
+    decoded: Arc<Mutex<HashMap<(u64, bool), Image>>>,
 }
 
 impl Session {
@@ -298,19 +301,26 @@ impl Session {
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
-        let res: Vec<(String, Arc<Vec<u8>>)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
+        let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
+        // Free images of resources that were deleted or replaced.
+        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, _), _| res.iter().any(|(_, b)| b.content_hash() == *k));
         move |requested: &str| {
             let (name, linear) = materialcraft_image::split_resource_key(requested);
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = format!("{requested}:{}", bytes.len());
+            let key = (bytes.content_hash(), linear);
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes, linear).ok()?;
+            let img = materialcraft_formats::decode(bytes.as_slice(), linear).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
+    }
+
+    /// Forget every decoded resource image (the package was replaced).
+    pub(crate) fn clear_decoded(&self) {
+        self.decoded.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     /// Cook the open graph now (at the preview size), on this thread.
@@ -318,21 +328,16 @@ impl Session {
         let dec = self.resource_decoder();
         let mut opts = Options::new(&dec);
         opts.max_size = self.preview_size;
-        let cooked = {
-            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            materialcraft_eval::cook(&self.pkg, self.graph, &opts, &mut cache)
-        };
-        self.cooked = cooked;
+        self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
         self.dirty = false;
         &self.cooked
     }
 
-    /// Cook graph `gi` at full size (exports), without touching the preview results.
+    /// Cook graph `gi` at full size, without touching the preview results.
     pub fn cook_full(&self, gi: usize) -> Cooked {
         let dec = self.resource_decoder();
         let opts = Options::new(&dec);
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        materialcraft_eval::cook(&self.pkg, gi, &opts, &mut cache)
+        materialcraft_eval::cook(&self.pkg, gi, &opts, &self.cache)
     }
 
     /// Cook if the graph changed since the last cook.

@@ -106,7 +106,7 @@ Where the alpha is below one, the surface lets light through: each camera ray co
 surfaces it meets front to back (`color × alpha`, the rest passes on) through up to eight layers,
 then shows what lies behind: the backdrop, or the environment when **Display ▸ Environment
 background** is on. Back faces seen through a clear front are shaded facing the viewer, so a
-cut-out sphere shows its inside. Parallax from the height output applies to every layer.
+cut-out sphere shows its inside. Every layer is the mesh as the height output displaced it.
 
 **Display ▸ Transparency (alpha)** turns this off, so the alpha is ignored and the mesh is opaque.
 It is on by default.
