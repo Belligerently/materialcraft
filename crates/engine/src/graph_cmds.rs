@@ -503,6 +503,7 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
         let src = s.graph()?.clone();
         let mut sub = materialcraft_core::Graph::new(&name);
         sub.size = src.size;
+        sub.seed = src.seed;
         sub.next_id = src.next_id;
         sub.nodes = src.nodes.iter().filter(|n| ids.contains(&n.id)).cloned().collect();
         sub.connections = src.connections.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).cloned().collect();
