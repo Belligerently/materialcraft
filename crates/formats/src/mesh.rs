@@ -20,13 +20,22 @@ fn bad(msg: impl Into<String>) -> FormatError {
 /// Append the triangles of `ix` to `out`, offset by `base`. Whole triangles are dropped when any
 /// of their indices is `>= n` (or when a trailing partial triangle is left over), so the
 /// triangles that follow keep their vertices.
-fn push_triangles(out: &mut Vec<u32>, ix: impl IntoIterator<Item = u32>, n: usize, base: u32) {
-    let ix: Vec<u32> = ix.into_iter().collect();
-    for t in ix.chunks_exact(3) {
+fn push_triangles(out: &mut Vec<u32>, ix: impl IntoIterator<Item = u32>, n: usize, base: u32) -> Result<()> {
+    append_triangles(out, ix, n, base, MAX_TRIANGLES)
+}
+
+fn append_triangles(out: &mut Vec<u32>, ix: impl IntoIterator<Item = u32>, n: usize, base: u32, limit: usize) -> Result<()> {
+    let mut ix = ix.into_iter();
+    while let (Some(a), Some(b), Some(c)) = (ix.next(), ix.next(), ix.next()) {
+        let t = [a, b, c];
         if t.iter().all(|i| (*i as usize) < n) {
+            if out.len() / 3 >= limit {
+                return Err(bad("the mesh is too large"));
+            }
             out.extend(t.iter().map(|i| i.saturating_add(base)));
         }
     }
+    Ok(())
 }
 
 /// Build the mesh, rejecting non-finite positions, normals and UVs before anything computes
@@ -94,7 +103,7 @@ fn obj(bytes: &[u8]) -> Result<Mesh> {
             // OBJ UVs have their origin at the bottom left.
             uvs.push(mesh.texcoords.get(i * 2..i * 2 + 2).map_or(Vec2::ZERO, |t| Vec2::new(t[0], 1.0 - t[1])));
         }
-        push_triangles(&mut indices, mesh.indices.iter().copied(), n, base);
+        push_triangles(&mut indices, mesh.indices.iter().copied(), n, base)?;
         if indices.len() / 3 > MAX_TRIANGLES {
             return Err(bad("the mesh is too large"));
         }
@@ -131,8 +140,8 @@ fn gltf(bytes: &[u8]) -> Result<Mesh> {
                 None => uvs.extend(std::iter::repeat_n(Vec2::ZERO, n)),
             }
             match reader.read_indices() {
-                Some(ix) => push_triangles(&mut indices, ix.into_u32(), n, base),
-                None => push_triangles(&mut indices, 0..n as u32, n, base),
+                Some(ix) => push_triangles(&mut indices, ix.into_u32(), n, base)?,
+                None => push_triangles(&mut indices, 0..n as u32, n, base)?,
             }
             positions.extend(pos);
             if indices.len() / 3 > MAX_TRIANGLES {
@@ -212,6 +221,25 @@ mod tests {
     }
 
     const QUAD: [[f32; 3]; 4] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+
+    #[test]
+    fn triangle_limit_stops_a_stream_before_collecting_the_rest() {
+        let mut out = Vec::new();
+        let mut read = 0;
+        let indices = std::iter::from_fn(|| {
+            read += 1;
+            assert!(read <= 6, "read beyond the first triangle over the limit");
+            Some(0)
+        });
+        assert!(append_triangles(&mut out, indices, 1, 0, 1).is_err());
+        assert_eq!(out, [0, 0, 0]);
+        assert_eq!(read, 6);
+    }
+
+    #[test]
+    fn obj_non_finite_normals_are_rejected() {
+        assert!(load_mesh("x.obj", b"v 0 0 0\nv 1 0 0\nv 0 1 0\nvn nan 0 1\nf 1//1 2//1 3//1\n").is_err());
+    }
 
     #[test]
     fn a_bad_index_drops_its_whole_triangle_and_later_ones_keep_their_vertices() {
