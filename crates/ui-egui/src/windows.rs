@@ -28,7 +28,7 @@ const PREVIEW: u32 = 96;
 fn render_templates() -> crate::thumbs::Previews {
     let light = materialcraft_render::Lighting::new("studio");
     let scene = materialcraft_render::Scene::builtin("sphere");
-    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, height_scale: 0.0, ..Default::default() };
+    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, ..Default::default() };
     materialcraft_engine::samples::TEMPLATES
         .iter()
         .map(|(id, _)| {

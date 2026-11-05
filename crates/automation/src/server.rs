@@ -189,11 +189,10 @@ pub struct RenderParams {
     /// 3D: UV repeats of the material on the scene for this render only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tiling: Option<f32>,
-    /// 3D beauty render: real displacement from the height output, ambient occlusion and a
-    /// shadowed key light (slower).
+    /// 3D beauty render: a finer displaced mesh, ambient occlusion and a shadowed key light (slower).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hq: Option<bool>,
-    /// With `hq`: displacement depth in scene radii (default 0.04).
+    /// With `hq`: displacement depth in scene radii (default: the view's height depth).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub displacement: Option<f32>,
 }

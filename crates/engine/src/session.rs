@@ -32,8 +32,10 @@ pub struct View3d {
     pub environment: String,
     pub env_rotation: f32,
     pub exposure: f32,
-    /// Parallax depth of the height output (0 = off).
+    /// How far the height output raises the surface (white above black), in mesh radii; 0 = off.
     pub height_scale: f32,
+    /// The height (0..1) that stays on the surface: 0 = the relief rises out of the mesh, 0.5 = centered on it.
+    pub height_level: f32,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -55,7 +57,8 @@ impl Default for View3d {
             environment: "studio".into(),
             env_rotation: 0.0,
             exposure: 0.0,
-            height_scale: 0.012,
+            height_scale: 0.04,
+            height_level: 0.0,
             show_axis: false,
             show_grid: false,
             transparency: true,

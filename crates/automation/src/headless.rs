@@ -5,7 +5,7 @@ use std::path::Path;
 
 use materialcraft_engine::core::NodeId;
 use materialcraft_engine::{Session, commands, file_cmds, inspect};
-use materialcraft_render::{Lighting, Maps, Scene, Settings};
+use materialcraft_render::{Lighting, Maps, Relief, Scene, Settings, VIEW_TRIANGLES};
 use serde_json::{Value, json};
 
 use crate::budgets::{HQ_TRIANGLES, MAX_LOCAL_RENDER_SIDE, MAX_PNG_SIDE, check_png, encode_png};
@@ -42,10 +42,9 @@ pub struct RenderOptions {
     pub full: bool,
     /// 3D: UV repeats override (the session's view is not changed).
     pub tiling: Option<f32>,
-    /// 3D: beauty render: the height output displaces a subdivided mesh, with ray-traced
-    /// ambient occlusion, a shadowed key light and 3×3 supersampling. Slower; for stills.
+    /// 3D: beauty render: a finer displaced mesh, ray-traced ambient occlusion, a shadowed key light and 3×3 supersampling.
     pub hq: bool,
-    /// 3D, with `hq`: displacement depth in scene radii (default 0.04).
+    /// 3D, with `hq`: displacement depth in scene radii (default: the view's height depth).
     pub displacement: Option<f32>,
 }
 
@@ -249,6 +248,8 @@ impl Headless {
             self.light = Some(Lighting::new(&v.environment));
         }
         let tiling = o.tiling.unwrap_or(v.tiling).clamp(0.1, 64.0);
+        let depth = if o.hq { o.displacement.unwrap_or(v.height_scale) } else { v.height_scale };
+        let relief = Relief { depth: depth.clamp(0.0, 0.5), level: v.height_level };
         let mut settings = Settings {
             yaw: o.yaw.unwrap_or(v.yaw),
             pitch: o.pitch.unwrap_or(v.pitch),
@@ -257,7 +258,6 @@ impl Headless {
             tiling,
             exposure: v.exposure,
             env_rotation: v.env_rotation,
-            height_scale: v.height_scale,
             show_env: false,
             supersample: 2,
             transparency: v.transparency,
@@ -267,13 +267,7 @@ impl Headless {
         let (w, h) = (o.width.unwrap_or(1024).clamp(16, max), o.height.unwrap_or(768).clamp(16, max));
         let maps = Maps::from_usages(self.session.material_maps());
         let (Some((_, scene)), Some(light)) = (&self.scene, &self.light) else { return (w, h, vec![0; (w * h * 4) as usize]) };
-        let displaced = match (o.hq, &maps.height) {
-            (true, Some(height)) => {
-                settings.height_scale = 0.0;
-                Some(Scene::displaced(&scene.mesh, height, tiling, o.displacement.unwrap_or(0.04).clamp(0.0, 0.5) * scene.radius, HQ_TRIANGLES))
-            }
-            _ => None,
-        };
+        let displaced = scene.with_relief(&maps, relief, tiling, if o.hq { HQ_TRIANGLES } else { VIEW_TRIANGLES });
         if o.hq {
             settings.supersample = 3;
             settings.ao_rays = 8;
