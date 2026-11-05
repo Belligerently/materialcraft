@@ -4,8 +4,9 @@
 use std::path::Path;
 
 use materialcraft_engine::core::NodeId;
-use materialcraft_engine::{Session, commands, file_cmds, inspect};
-use materialcraft_render::{Lighting, Maps, Scene, Settings};
+use materialcraft_engine::formats::material::MATERIAL_EXT;
+use materialcraft_engine::{Session, commands, file_cmds, inspect, material_cmds};
+use materialcraft_render::{Lighting, Maps, Relief, Scene, Settings, VIEW_TRIANGLES};
 use serde_json::{Value, json};
 
 use crate::budgets::{HQ_TRIANGLES, MAX_LOCAL_RENDER_SIDE, MAX_PNG_SIDE, check_png, encode_png};
@@ -42,10 +43,9 @@ pub struct RenderOptions {
     pub full: bool,
     /// 3D: UV repeats override (the session's view is not changed).
     pub tiling: Option<f32>,
-    /// 3D: beauty render: the height output displaces a subdivided mesh, with ray-traced
-    /// ambient occlusion, a shadowed key light and 3×3 supersampling. Slower; for stills.
+    /// 3D: beauty render: a finer displaced mesh, ray-traced ambient occlusion, a shadowed key light and 3×3 supersampling.
     pub hq: bool,
-    /// 3D, with `hq`: displacement depth in scene radii (default 0.04).
+    /// 3D, with `hq`: displacement depth in scene radii (default: the view's height depth).
     pub displacement: Option<f32>,
 }
 
@@ -191,8 +191,8 @@ impl Headless {
     /// Export every output of a graph into folder `dir`.
     pub fn export(&mut self, p: &Value) -> Result<Value, AutomationError> {
         let dir = p.get("dir").and_then(Value::as_str).ok_or_else(|| bad("`dir` is required"))?;
-        let (gi, ext, pattern, depth) = file_cmds::export_params(&self.session, p)?;
-        let files = file_cmds::export_outputs(&self.session, gi, &ext, &pattern, depth)?;
+        let (gi, ext, pattern, depth, size) = file_cmds::export_params(&self.session, p)?;
+        let files = file_cmds::export_outputs(&self.session, gi, &ext, &pattern, depth, size)?;
         self.create_dir_all(dir)?;
         let mut written = Vec::new();
         for f in files {
@@ -201,6 +201,26 @@ impl Headless {
             written.push(path);
         }
         Ok(json!({"files": written}))
+    }
+
+    /// Cook a graph and write it as a portable `.mcmat` material (`.mcmat` appended when
+    /// missing) to `path`: `{path, graph?, size?, values?}`, the workspace-scoped
+    /// `file.exportMaterial`. The file is capped at what `package_open` may read back.
+    pub fn export_material(&mut self, p: &Value) -> Result<Value, AutomationError> {
+        let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("`path` is required"))?;
+        let path = if path.to_ascii_lowercase().ends_with(&format!(".{MATERIAL_EXT}")) { path.to_string() } else { format!("{path}.{MATERIAL_EXT}") };
+        match &self.fs {
+            Filesystem::Denied => return Err(bad("file access is not granted: start the server with --write-root <dir>")),
+            Filesystem::Workspace(w) => w.check_write(&path)?,
+            Filesystem::TrustedLocal => {}
+        }
+        let (gi, options) = material_cmds::material_request(&self.session, "material.export", p)?;
+        let bytes = material_cmds::material_bytes(&self.session, gi, &options)?;
+        if bytes.len() as u64 > MAX_READ_BYTES {
+            return Err(bad(format!("the material is {} bytes (limit {MAX_READ_BYTES}); export a smaller `size`", bytes.len())));
+        }
+        self.write(&path, &bytes)?;
+        Ok(json!({"path": path, "bytes": bytes.len()}))
     }
 
     /// Render the 3D view or a node's 2D output as PNG.
@@ -253,6 +273,8 @@ impl Headless {
             self.light = Some(Lighting::new(&v.environment));
         }
         let tiling = o.tiling.unwrap_or(v.tiling).clamp(0.1, 64.0);
+        let depth = if o.hq { o.displacement.unwrap_or(v.height_scale) } else { v.height_scale };
+        let relief = Relief { depth: depth.clamp(0.0, 0.5), level: v.height_level };
         let mut settings = Settings {
             yaw: o.yaw.unwrap_or(v.yaw),
             pitch: o.pitch.unwrap_or(v.pitch),
@@ -261,7 +283,6 @@ impl Headless {
             tiling,
             exposure: v.exposure,
             env_rotation: v.env_rotation,
-            height_scale: v.height_scale,
             show_env: false,
             supersample: 2,
             transparency: v.transparency,
@@ -271,13 +292,7 @@ impl Headless {
         let (w, h) = (o.width.unwrap_or(1024).clamp(16, max), o.height.unwrap_or(768).clamp(16, max));
         let maps = Maps::from_usages(self.session.material_maps());
         let (Some((_, scene)), Some(light)) = (&self.scene, &self.light) else { return (w, h, vec![0; (w * h * 4) as usize]) };
-        let displaced = match (o.hq, &maps.height) {
-            (true, Some(height)) => {
-                settings.height_scale = 0.0;
-                Some(Scene::displaced(&scene.mesh, height, tiling, o.displacement.unwrap_or(0.04).clamp(0.0, 0.5) * scene.radius, HQ_TRIANGLES))
-            }
-            _ => None,
-        };
+        let displaced = scene.with_relief(&maps, relief, tiling, if o.hq { HQ_TRIANGLES } else { VIEW_TRIANGLES });
         if o.hq {
             settings.supersample = 3;
             settings.ao_rays = 8;

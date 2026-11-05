@@ -28,7 +28,7 @@ const PREVIEW: u32 = 96;
 fn render_templates() -> crate::thumbs::Previews {
     let light = materialcraft_render::Lighting::new("studio");
     let scene = materialcraft_render::Scene::builtin("sphere");
-    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, height_scale: 0.0, ..Default::default() };
+    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, ..Default::default() };
     materialcraft_engine::samples::TEMPLATES
         .iter()
         .map(|(id, _)| {
@@ -105,7 +105,8 @@ fn modal(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, size: egui
         .collapsible(false)
         .resizable(false)
         .default_size(size)
-        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .show(ctx, body);
 }
 
@@ -197,7 +198,7 @@ fn new_graph(app: &mut MaterialCraftApp, ctx: &egui::Context) {
 fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut go = false;
-    modal(ctx, "export", tr("Export outputs"), &mut open, vec2(460.0, 260.0), |ui| {
+    modal(ctx, "export", tr("Export outputs"), &mut open, vec2(460.0, 290.0), |ui| {
         let tk = Tokens::get(ui.ctx());
         let g = app.session.graph().map(|g| g.name.clone()).unwrap_or_default();
         ui.label(RichText::new(format!("{}: {g}", tr("Graph"))).strong());
@@ -229,6 +230,20 @@ fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                 ui.selectable_value(&mut app.ui.export_depth, d, tr(l));
             }
         });
+        let graph_size = app.session.graph().map_or(String::new(), |g| {
+            let [w, h] = g.size_px();
+            format!("{} ({w} x {h})", tr("Graph's size"))
+        });
+        let size_label = match app.ui.export_size {
+            0 => graph_size.clone(),
+            px => format!("{px} px"),
+        };
+        crate::widgets::combo(ui, tr("Resolution"), size_label, |ui| {
+            ui.selectable_value(&mut app.ui.export_size, 0, graph_size);
+            for px in [256u32, 512, 1024, 2048, 4096, 8192] {
+                ui.selectable_value(&mut app.ui.export_size, px, format!("{px} px"));
+            }
+        });
         ui.horizontal(|ui| {
             ui.label(tr("File names"));
             let r = ui.add(egui::TextEdit::singleline(&mut app.ui.export_pattern).desired_width(260.0));
@@ -250,7 +265,7 @@ fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             app.toast(tr("Choose a folder to export to"), true);
         } else {
             let depth = if app.ui.export_depth == 0 { Value::Null } else { json!(app.ui.export_depth) };
-            let p = json!({"dir": app.ui.export_dir, "format": app.ui.export_format, "pattern": app.ui.export_pattern, "depth": depth});
+            let p = json!({"dir": app.ui.export_dir, "format": app.ui.export_format, "pattern": app.ui.export_pattern, "depth": depth, "size": if app.ui.export_size == 0 { Value::Null } else { json!(app.ui.export_size) }});
             #[cfg(target_arch = "wasm32")]
             {
                 crate::web_files::export(app, &p);
@@ -302,7 +317,7 @@ fn preferences(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             tr("Preview size while editing"),
             if p.preview_size == 0 { tr("Full size").to_string() } else { format!("{} px", p.preview_size) },
             |ui| {
-                for s in [256u32, 512, 1024, 2048, 0] {
+                for s in [256u32, 512, 1024, 2048, 4096, 0] {
                     let label = if s == 0 { tr("Full size").to_string() } else { format!("{s} px") };
                     ui.selectable_value(&mut p.preview_size, s, label);
                 }

@@ -230,7 +230,12 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
             let r = materialcraft_engine::execute(&mut app.session, id, &params);
             app.session.end_merge();
             match r {
-                Ok(v) => ok(v),
+                Ok(v) => {
+                    if id == "view.previewSize" {
+                        app.ui.prefs.preview_size = app.session.preview_size.unwrap_or(0);
+                    }
+                    ok(v)
+                }
                 Err(e) => err(e),
             }
         }

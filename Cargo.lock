@@ -2313,8 +2313,10 @@ dependencies = [
  "egui",
  "image",
  "log",
+ "materialcraft-automation",
  "materialcraft-engine",
  "materialcraft-ui-egui",
+ "rfd",
  "serde_json",
  "winresource",
 ]
@@ -2332,6 +2334,7 @@ dependencies = [
  "materialcraft-render",
  "rayon",
  "rmcp",
+ "rustix 1.1.6",
  "schemars",
  "serde",
  "serde_json",
