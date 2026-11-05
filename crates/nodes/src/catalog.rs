@@ -417,5 +417,10 @@ pub fn resolve_params(def: &NodeDef, overrides: &BTreeMap<String, Value>) -> BTr
             m.insert(k.clone(), v.clone());
         }
     }
+    clamp_params(def, &mut m);
     m
 }
+
+#[cfg(test)]
+#[path = "catalog.test.rs"]
+mod tests;
