@@ -2316,6 +2316,7 @@ dependencies = [
  "materialcraft-automation",
  "materialcraft-engine",
  "materialcraft-ui-egui",
+ "rfd",
  "serde_json",
  "winresource",
 ]

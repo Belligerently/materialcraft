@@ -6,6 +6,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod control_server;
+mod start_failure;
 
 use materialcraft_engine::Session;
 use materialcraft_ui_egui::MaterialCraftApp;
@@ -109,6 +110,8 @@ fn main() {
     );
     if let Err(e) = r {
         eprintln!("materialcraft: {e}");
+        // Say why instead of exiting silently (`start_failure`).
+        start_failure::report(&e);
         std::process::exit(1);
     }
 }
