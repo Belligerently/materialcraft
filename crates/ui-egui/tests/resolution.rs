@@ -40,7 +40,12 @@ fn selecting_4k_cooks_and_displays_4k_material_maps() {
         },
         app(),
     );
+    h.input_mut().max_texture_side = Some(4096);
     choose_4k(&mut h);
+    // A smaller device limit must refresh the texture without losing the cooked source.
+    h.input_mut().max_texture_side = Some(2048);
+    h.step();
+    assert_eq!(h.state().view2d.shown.as_ref().map(|(w, h, _)| (*w, *h)), Some((4096, 4096)));
 }
 
 #[test]

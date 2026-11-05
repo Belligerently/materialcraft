@@ -117,13 +117,22 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         );
         return;
     };
+    let texture_limit = ctx.input(|i| i.max_texture_side).max(1);
     let key = app.session.cooked.nodes.get(&id).map_or(0, |r| r.key)
+        ^ (texture_limit as u64).rotate_left(32)
         ^ (app.session.view2d.port as u64).wrapping_mul(0x9e37)
         ^ (app.session.view2d.channel.len() as u64 * 31)
         ^ app.session.view2d.channel.bytes().next().unwrap_or(0) as u64;
     if app.view2d.tex.as_ref().is_none_or(|(k, _)| *k != key) {
         let px = rgba8(&img, &app.session.view2d.channel);
-        let ci = ColorImage::from_rgba_unmultiplied([img.w as usize, img.h as usize], &px);
+        // Keep source pixels for readout/screenshots, but respect the renderer's upload limit.
+        let ci = if img.w.max(img.h) as usize > texture_limit {
+            let scale = texture_limit as f64 / f64::from(img.w.max(img.h));
+            let display = img.resize((f64::from(img.w) * scale).floor().max(1.0) as u32, (f64::from(img.h) * scale).floor().max(1.0) as u32, false);
+            ColorImage::from_rgba_unmultiplied([display.w as usize, display.h as usize], &rgba8(&display, &app.session.view2d.channel))
+        } else {
+            ColorImage::from_rgba_unmultiplied([img.w as usize, img.h as usize], &px)
+        };
         app.view2d.tex = Some((key, ctx.load_texture("view2d", ci, TextureOptions::NEAREST)));
         app.view2d.shown = Some((img.w, img.h, px));
     }

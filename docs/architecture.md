@@ -52,6 +52,8 @@ The 2D toolbar and the 3D view's Display menu expose the shared preview limit (2
 for 4096 px or larger. Both controls run `view.previewSize` and persist the choice in preferences;
 control-channel calls to the same command also retain their size across UI frames. The 3D view
 uses those cooked maps, while its rendered frame follows the panel's physical pixel dimensions.
+If the device supports smaller textures than the cooked image, the 2D view reduces only the
+uploaded texture to that limit; source pixels, readout and screenshots retain the cooked size.
 
 The desktop UI cooks on a worker thread (`ui-egui/src/cook.rs`) from a snapshot of the package and
 keeps drawing the last results; the browser cooks on the UI thread.
