@@ -279,8 +279,19 @@ impl MaterialCraftApp {
         function_editor::show(self, &ctx);
         toasts(self, &ctx);
         control::request_screenshots(self, &ctx);
+        end_gesture_if_released(
+            &mut self.session,
+            ctx.input(|i| i.pointer.any_released() || i.key_released(egui::Key::Enter) || i.key_released(egui::Key::Space) || i.key_released(egui::Key::Tab)),
+        );
         let dt = (now_ms() - t0) as f32;
         self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
+    }
+}
+
+/// A completed pointer or keyboard action ends the gesture: the next edit is a new undo step.
+pub(crate) fn end_gesture_if_released(session: &mut materialcraft_engine::Session, released: bool) {
+    if released {
+        session.end_merge();
     }
 }
 

@@ -122,6 +122,8 @@ struct Snapshot {
     graph: usize,
     selection: Vec<NodeId>,
     label: String,
+    modified: bool,
+    dirty: bool,
 }
 
 /// Nodes and connections copied to the clipboard (as JSON, so other sessions can paste them).
@@ -207,7 +209,14 @@ impl Session {
     }
 
     fn snapshot(&self, label: &str) -> Snapshot {
-        Snapshot { pkg: self.pkg.clone(), graph: self.graph, selection: self.selection.clone(), label: label.into() }
+        Snapshot {
+            pkg: self.pkg.clone(),
+            graph: self.graph,
+            selection: self.selection.clone(),
+            label: label.into(),
+            modified: self.modified,
+            dirty: self.dirty,
+        }
     }
 
     /// Run `f` as one undoable step. On error the session is restored.
@@ -220,9 +229,12 @@ impl Session {
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
+            // The merged step keeps its original snapshot; restore the session if `f` fails.
+            let snap = self.snapshot(label);
             let r = f(self);
-            if r.is_ok() {
-                self.changed();
+            match &r {
+                Ok(_) => self.changed(),
+                Err(_) => self.restore(snap),
             }
             return r;
         }
@@ -231,6 +243,12 @@ impl Session {
             self.merge_key = Some(key.into());
         }
         r
+    }
+
+    /// End the current coalescing run: the next [`Session::edit_merged`] starts a new undo step.
+    /// Call it when a gesture ends (pointer release) and once per control or MCP request.
+    pub fn end_merge(&mut self) {
+        self.merge_key = None;
     }
 
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
@@ -256,6 +274,8 @@ impl Session {
         self.pkg = s.pkg;
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
+        self.modified = s.modified;
+        self.dirty = s.dirty;
     }
 
     /// Mark the document modified and in need of a cook.
