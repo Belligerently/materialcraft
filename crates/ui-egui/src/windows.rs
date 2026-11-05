@@ -105,7 +105,8 @@ fn modal(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, size: egui
         .collapsible(false)
         .resizable(false)
         .default_size(size)
-        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ctx.content_rect().center())
         .show(ctx, body);
 }
 
@@ -197,7 +198,7 @@ fn new_graph(app: &mut MaterialCraftApp, ctx: &egui::Context) {
 fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     let mut open = true;
     let mut go = false;
-    modal(ctx, "export", tr("Export outputs"), &mut open, vec2(460.0, 260.0), |ui| {
+    modal(ctx, "export", tr("Export outputs"), &mut open, vec2(460.0, 290.0), |ui| {
         let tk = Tokens::get(ui.ctx());
         let g = app.session.graph().map(|g| g.name.clone()).unwrap_or_default();
         ui.label(RichText::new(format!("{}: {g}", tr("Graph"))).strong());
@@ -229,6 +230,20 @@ fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                 ui.selectable_value(&mut app.ui.export_depth, d, tr(l));
             }
         });
+        let graph_size = app.session.graph().map_or(String::new(), |g| {
+            let [w, h] = g.size_px();
+            format!("{} ({w} x {h})", tr("Graph's size"))
+        });
+        let size_label = match app.ui.export_size {
+            0 => graph_size.clone(),
+            px => format!("{px} px"),
+        };
+        crate::widgets::combo(ui, tr("Resolution"), size_label, |ui| {
+            ui.selectable_value(&mut app.ui.export_size, 0, graph_size);
+            for px in [256u32, 512, 1024, 2048, 4096, 8192] {
+                ui.selectable_value(&mut app.ui.export_size, px, format!("{px} px"));
+            }
+        });
         ui.horizontal(|ui| {
             ui.label(tr("File names"));
             let r = ui.add(egui::TextEdit::singleline(&mut app.ui.export_pattern).desired_width(260.0));
@@ -250,7 +265,7 @@ fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             app.toast(tr("Choose a folder to export to"), true);
         } else {
             let depth = if app.ui.export_depth == 0 { Value::Null } else { json!(app.ui.export_depth) };
-            let p = json!({"dir": app.ui.export_dir, "format": app.ui.export_format, "pattern": app.ui.export_pattern, "depth": depth});
+            let p = json!({"dir": app.ui.export_dir, "format": app.ui.export_format, "pattern": app.ui.export_pattern, "depth": depth, "size": if app.ui.export_size == 0 { Value::Null } else { json!(app.ui.export_size) }});
             #[cfg(target_arch = "wasm32")]
             {
                 crate::web_files::export(app, &p);
@@ -271,8 +286,17 @@ fn export(app: &mut MaterialCraftApp, ctx: &egui::Context) {
 
 fn preferences(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     let mut open = true;
-    modal(ctx, "prefs", tr("Preferences"), &mut open, vec2(380.0, 300.0), |ui| {
+    modal(ctx, "prefs", tr("Preferences"), &mut open, vec2(380.0, 340.0), |ui| {
         let p = &mut app.ui.prefs;
+        let current_lang = crate::i18n::current();
+        crate::widgets::combo(ui, tr("Language"), current_lang.name, |ui| {
+            for l in &crate::i18n::LANGUAGES {
+                if ui.selectable_label(p.language == l.code, l.name).clicked() {
+                    p.language = l.code.to_owned();
+                    crate::i18n::set_language(&p.language);
+                }
+            }
+        });
         crate::widgets::combo(ui, tr("Brightness"), tr(p.brightness.label()), |ui| {
             for b in Brightness::ALL {
                 ui.selectable_value(&mut p.brightness, b, tr(b.label()));
@@ -449,14 +473,22 @@ fn home(app: &mut MaterialCraftApp, ctx: &egui::Context) {
 
 pub fn console(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let tk = Tokens::get(ui.ctx());
+    let console_line = |text: String, color: Color32| RichText::new(text).monospace().size(11.0).color(color);
+
     egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
-        for l in &app.session.log {
-            ui.label(RichText::new(l).monospace().size(11.0).color(tk.text));
+        for line in &app.session.log {
+            let warning = line.starts_with(materialcraft_engine::WARNING_PREFIX);
+            ui.label(console_line(line.clone(), if warning { tk.warning } else { tk.text }));
         }
-        for (id, r) in &app.session.cooked.nodes {
-            if let Some(e) = &r.error {
-                ui.label(RichText::new(format!("node {}: {e}", id.0)).monospace().size(11.0).color(tk.danger));
-            }
+
+        // Placeholders for missing SBS nodes are already listed in the warnings, so they get one line
+        let (failed, placeholders) = app.session.cook_failures();
+        for (id, error) in failed {
+            ui.label(console_line(format!("node {}: {error}", id.0), tk.danger));
+        }
+        if placeholders > 0 {
+            let text = format!("{placeholders} {}", tr("placeholder node(s) stand in for nodes MaterialCraft doesn't have yet (see the warnings above)"));
+            ui.label(console_line(text, tk.warning));
         }
     });
 }
@@ -510,8 +542,17 @@ pub fn function_summary(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, p
     });
 }
 
-/// Extensions File ▸ Open reads: packages and portable materials (opening their source package).
-pub const OPEN_EXTS: &[&str] = &["mcraft", MATERIAL_EXT];
+/// Extensions File ▸ Open reads: SBS (the main format) and `.mcraft` packages, and materials (their source package).
+pub const OPEN_EXTS: &[&str] = &["sbs", "mcraft", MATERIAL_EXT];
+
+/// After a package opened with warnings (an SBS file using nodes MaterialCraft lacks, say), bring the Console forward.
+pub fn after_open(app: &mut MaterialCraftApp) {
+    let warning_count = app.session.load_warnings.len();
+    if warning_count > 0 {
+        app.ui.dock.focus(crate::docking::Panel::Console);
+        app.toast(format!("{} {warning_count} {}", tr("Opened with"), tr("warnings: see the Console")), false);
+    }
+}
 
 /// File menu actions that need a file dialog. Returns true when handled.
 pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) -> bool {
@@ -521,7 +562,7 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
     {
         match id {
             "file.open" => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("MaterialCraft package or material", OPEN_EXTS).pick_file() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("SBS or MaterialCraft package, or material", OPEN_EXTS).pick_file() {
                     open_path(app, &p.display().to_string());
                 }
                 true
@@ -535,9 +576,14 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
                 true
             }
             "file.save" | "file.saveAs" => {
-                let name = format!("{}.mcraft", materialcraft_engine::formats::safe_file_name(&app.session.pkg.name));
-                if let Some(p) = rfd::FileDialog::new().set_file_name(name).add_filter("MaterialCraft package", &["mcraft"]).save_file() {
-                    let path = p.display().to_string();
+                let name = format!("{}.sbs", materialcraft_engine::formats::safe_file_name(&app.session.pkg.name));
+                if let Some(p) = rfd::FileDialog::new()
+                    .set_file_name(name)
+                    .add_filter("SBS package", &["sbs"])
+                    .add_filter("MaterialCraft package (older format)", &["mcraft"])
+                    .save_file()
+                {
+                    let path = materialcraft_engine::file_cmds::package_path(&p.display().to_string());
                     if app.run("file.save", json!({"path": path})).is_some() {
                         app.ui.add_recent(&path);
                         app.toast(format!("{} {path}", tr("Saved")), false);
@@ -598,5 +644,6 @@ pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
         app.ui.add_recent(path);
         app.ui.frame_all = true;
         app.toast(format!("{} {path}", tr("Opened")), false);
+        after_open(app);
     }
 }
