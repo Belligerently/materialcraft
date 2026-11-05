@@ -66,6 +66,19 @@ pub struct GraphCamera {
     pub zoom: f32,
 }
 
+impl GraphCamera {
+    pub const ZOOM: (f32, f32) = (0.08, 4.0);
+
+    /// The camera with a finite pan and a zoom inside [`Self::ZOOM`] (state set from outside can
+    /// hold a zoom of 0 or NaN, which the view divides by).
+    pub fn sanitized(self) -> GraphCamera {
+        let d = GraphCamera::default();
+        let pan = |v: f32, d: f32| if v.is_finite() { v } else { d };
+        let zoom = if self.zoom.is_finite() { self.zoom.clamp(Self::ZOOM.0, Self::ZOOM.1) } else { d.zoom };
+        GraphCamera { pan: [pan(self.pan[0], d.pan[0]), pan(self.pan[1], d.pan[1])], zoom }
+    }
+}
+
 impl Default for GraphCamera {
     fn default() -> Self {
         GraphCamera { pan: [-60.0, -60.0], zoom: 0.8 }
@@ -79,6 +92,17 @@ pub struct ImageCamera {
     pub offset: [f32; 2],
     /// Fit the image to the view (until the user zooms).
     pub fit: bool,
+}
+
+impl ImageCamera {
+    pub const ZOOM: (f32, f32) = (0.02, 64.0);
+
+    /// The camera with a finite offset and a zoom inside [`Self::ZOOM`].
+    pub fn sanitized(self) -> ImageCamera {
+        let off = |v: f32| if v.is_finite() { v } else { 0.0 };
+        let zoom = if self.zoom.is_finite() { self.zoom.clamp(Self::ZOOM.0, Self::ZOOM.1) } else { 1.0 };
+        ImageCamera { zoom, offset: [off(self.offset[0]), off(self.offset[1])], fit: self.fit }
+    }
 }
 
 impl Default for ImageCamera {
@@ -152,6 +176,16 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cameras_sanitize_zero_and_non_finite_zoom() {
+        let g = GraphCamera { pan: [f32::NAN, 5.0], zoom: 0.0 }.sanitized();
+        assert_eq!(g.zoom, GraphCamera::ZOOM.0);
+        assert!(g.pan[0].is_finite() && g.pan[1] == 5.0);
+        assert_eq!(GraphCamera { pan: [0.0; 2], zoom: f32::NAN }.sanitized().zoom, GraphCamera::default().zoom);
+        assert_eq!(ImageCamera { zoom: -3.0, offset: [f32::INFINITY, 1.0], fit: false }.sanitized().zoom, ImageCamera::ZOOM.0);
+        assert_eq!(ImageCamera { zoom: 1e9, offset: [0.0; 2], fit: false }.sanitized().zoom, ImageCamera::ZOOM.1);
+    }
 
     #[test]
     fn camera_prefs_persist_and_default_when_missing() {
