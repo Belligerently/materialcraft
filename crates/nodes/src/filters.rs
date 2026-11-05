@@ -509,42 +509,22 @@ fn anisotropic_blur(ctx: &Ctx) -> CookResult {
     Ok(vec![Image::generate_uv(ctx.w, ctx.h, img.kind, |u, v| transform_sample(&b, u, v, [0.0, 0.0], [1.0, 1.0], -a / TAU, false, true).unwrap_or([0.0; 4]))])
 }
 
-/// Most extra horizontal passes `blur_xy` runs: a cost bound, whatever sigma it is given.
-const MAX_BLUR_PASSES: i64 = 64;
-/// Widest horizontal kernel half-width `blur_xy` builds: a cost bound on the kernel allocation.
-const MAX_KERNEL_RADIUS: i64 = 512;
-
 fn blur_xy(img: &Image, sx: f32, sy: f32, tile: bool) -> Image {
     if !sx.is_finite() || !sy.is_finite() {
         return img.clone();
     }
     // Separable: a horizontal-only Gaussian is a 2D one on an image stretched vertically, so
-    // blur fully with the smaller sigma and add the extra along x by repeated small passes.
+    // blur fully with the smaller sigma and add the extra along x.
+    let cap = img.w.max(img.h) as f32;
+    let (sx, sy) = (sx.min(cap), sy.min(cap));
     let base = ops::gaussian(img, sy, tile);
     let extra = (sx * sx - sy * sy).max(0.0).sqrt();
     if extra < 0.1 {
         return base;
     }
-    let n = ((extra / 2.0).ceil().max(1.0) as i64).min(MAX_BLUR_PASSES);
-    let step = extra / (n as f32).sqrt();
-    let mut out = base;
-    for _ in 0..n {
-        let src = out.clone();
-        let r = ((step * 2.0).ceil() as i64).clamp(1, MAX_KERNEL_RADIUS);
-        let k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * step * step)).exp()).collect();
-        let sum: f32 = k.iter().sum();
-        out = Image::generate(src.w, src.h, src.kind, |x, y| {
-            let mut acc = [0.0; 4];
-            for (j, kv) in k.iter().enumerate() {
-                let p = src.get(x as i64 + j as i64 - r, y as i64, tile);
-                for c in 0..4 {
-                    acc[c] += p[c] * kv / sum;
-                }
-            }
-            acc
-        });
-    }
-    out
+    // Independent Gaussians compose in quadrature, so one horizontal Gaussian of sigma `extra`
+    // finishes the job (box passes: O(1) per pixel, sigma clamped to the image size).
+    ops::gaussian_h(&base, extra, tile)
 }
 
 fn non_uniform_blur(ctx: &Ctx) -> CookResult {
