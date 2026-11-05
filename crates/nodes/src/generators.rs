@@ -357,7 +357,8 @@ fn plasma(ctx: &Ctx) -> CookResult {
 
 fn turbulence(ctx: &Ctx) -> CookResult {
     let (sc, r, s) = (scale(ctx), ctx.f("roughness"), ctx.seed);
-    Ok(vec![ctx.gen_gray(|u, v| 1.0 - ridged(u, v, sc, 6, r, s).sqrt())])
+    // A negative roughness makes `ridged` negative; clamp so the sqrt can't be NaN.
+    Ok(vec![ctx.gen_gray(|u, v| 1.0 - ridged(u, v, sc, 6, r, s).max(0.0).sqrt())])
 }
 
 fn creased(ctx: &Ctx) -> CookResult {
