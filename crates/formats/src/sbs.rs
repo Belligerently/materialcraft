@@ -1074,8 +1074,13 @@ impl<'text> Reader<'text, '_> {
         if let Some(node) = node {
             for param in instance_params() {
                 let param_name = child_value(param, "name").unwrap_or("");
-                match def.param(param_name) {
-                    Some(param_def) => self.set_param(node, param_name, &param_def.default, param_def.options.len(), param, &graph_name),
+                let id = match (def.id, param_name) {
+                    ("histogram_scan", "Position") => "position",
+                    ("histogram_scan", "Contrast") => "contrast",
+                    _ => param_name,
+                };
+                match def.param(id) {
+                    Some(param_def) => self.set_param(node, id, &param_def.default, param_def.options.len(), param, &graph_name),
                     None => self.warnings.add(format!("`{}`: parameter `{param_name}` has no MaterialCraft equivalent and was ignored", def.id)),
                 }
             }
@@ -1086,7 +1091,15 @@ impl<'text> Reader<'text, '_> {
         let port_for = |identifier: &str| if def.output_index(identifier).is_some() { identifier.to_string() } else { first_output.clone() };
         let unbridged = output_uids.iter().filter(|(uid, _)| !bridgings.iter().any(|(b, _)| b == uid)).map(|(uid, _)| (uid.clone(), first_output.clone()));
         let outputs = bridgings.iter().map(|(uid, identifier)| (uid.clone(), port_for(identifier))).chain(unbridged).collect();
-        let inputs = def.inputs.iter().map(|p| (p.id.to_string(), p.id.to_string())).collect();
+        let mut inputs: HashMap<_, _> = def.inputs.iter().map(|p| (p.id.to_string(), p.id.to_string())).collect();
+        let input_alias = match def.id {
+            "histogram_scan" => Some("Input_1"),
+            "auto_levels" => Some("Input"),
+            _ => None,
+        };
+        if let Some(alias) = input_alias {
+            inputs.insert(alias.to_string(), "input".to_string());
+        }
         ReadNode { id, index, inputs, outputs, open_inputs: false }
     }
 
