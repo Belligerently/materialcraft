@@ -102,6 +102,10 @@ fn snapshots() {
     h.state_mut().run("view.2d", json!({"node": 16, "histogram": true}));
     settle(&mut h, 30);
     save(&mut h, &dir, "workspace");
+    h.state_mut().run("view.3d", json!({"heightScale": 0.2}));
+    settle(&mut h, 60);
+    save(&mut h, &dir, "height-relief");
+    h.state_mut().run("view.3d", json!({"heightScale": 0.04}));
     for (tpl, name) in
         [("wood", "wood"), ("rusty_metal", "rusty-metal"), ("stone_tiles", "stone-tiles"), ("fabric", "fabric"), ("ground", "ground"), ("lava", "lava")]
     {

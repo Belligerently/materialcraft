@@ -339,6 +339,24 @@ fn view3d_target_is_validated_clamped_and_reset() {
     assert_eq!(s.view3d.target, [0.0; 3]);
 }
 
+/// The height output rises out of the mesh by default; depth and level are clamped and reset with the scene.
+#[test]
+fn view3d_height_depth_and_level_are_clamped_and_reset() {
+    let mut s = sample_session();
+    assert_eq!(s.view3d.height_level, 0.0, "the relief rises out of the surface by default");
+    assert!(s.view3d.height_scale > 0.0);
+
+    let view = run(&mut s, "view.3d", json!({"heightScale": 0.1, "heightLevel": 0.5}));
+    assert_eq!((view["heightScale"].as_f64(), view["heightLevel"].as_f64()), (Some(0.1f32 as f64), Some(0.5)));
+    run(&mut s, "view.3d", json!({"heightScale": 9.0, "heightLevel": -3.0}));
+    assert_eq!((s.view3d.height_scale, s.view3d.height_level), (0.5, 0.0));
+    run(&mut s, "view.3d", json!({"heightLevel": 7.0}));
+    assert_eq!(s.view3d.height_level, 1.0);
+
+    run(&mut s, "view.3d.reset", json!({}));
+    assert_eq!(s.view3d.height_level, 0.0);
+}
+
 #[test]
 fn camera_prefs_bound_the_pan_and_survive_hostile_values() {
     use materialcraft_engine::CameraPrefs;
