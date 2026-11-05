@@ -167,7 +167,7 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    decoded: Arc<Mutex<HashMap<u64, Image>>>,
+    decoded: Arc<Mutex<HashMap<(u64, bool), Image>>>,
 }
 
 impl Session {
@@ -311,14 +311,15 @@ impl Session {
         let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
         // Free images of resources that were deleted or replaced.
-        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|k, _| res.iter().any(|(_, b)| b.content_hash() == *k));
-        move |name: &str| {
+        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, _), _| res.iter().any(|(_, b)| b.content_hash() == *k));
+        move |requested: &str| {
+            let (name, linear) = materialcraft_image::split_resource_key(requested);
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = bytes.content_hash();
+            let key = (bytes.content_hash(), linear);
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes.as_slice()).ok()?;
+            let img = materialcraft_formats::decode(bytes.as_slice(), linear).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }

@@ -86,7 +86,7 @@ fn package_save_and_open_round_trip() {
     let small = dir.join("small");
     run(&mut s, "file.export", json!({"dir": small.to_str().unwrap(), "format": "png", "depth": 8, "size": 64}));
     let file = std::fs::read_dir(&small).unwrap().next().unwrap().unwrap().path();
-    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap()).unwrap();
+    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap(), false).unwrap();
     assert_eq!((img.w, img.h), (64, 64));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -99,7 +99,7 @@ fn export_size_keeps_proportions_and_clamps() {
     let dims = |s: &Session, size: Value| {
         let (gi, ext, pattern, depth, size) = materialcraft_engine::file_cmds::export_params(s, &json!({"size": size})).unwrap();
         let files = materialcraft_engine::file_cmds::export_outputs(s, gi, &ext, &pattern, depth, size).unwrap();
-        files.iter().map(|f| materialcraft_formats::decode(&f.bytes).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
+        files.iter().map(|f| materialcraft_formats::decode(&f.bytes, false).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
     };
     for size in [json!(0), json!(null)] {
         assert!(dims(&s, size).iter().all(|d| *d == (128, 64)));
