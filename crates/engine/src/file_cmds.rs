@@ -280,13 +280,18 @@ pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: O
     let dec = s.resource_decoder();
     let cooked = materialcraft_eval::cook(&pkg, gi, &materialcraft_eval::Options::new(&dec), &s.cache);
     let mut out = Vec::new();
+    let mut names = std::collections::HashSet::new();
     for (id, usage, ident, img) in materialcraft_eval::outputs(g, &cooked) {
         let Some(img) = img else { continue };
+        let file = format!("{}.{}", output_name(pattern, &g.name, &ident, usage), ext.trim_start_matches('.'));
+        if !names.insert(file.clone()) {
+            return Err(bad("file.export", format!("duplicate export filename `{file}`: use unique output identifiers or a different filename pattern")));
+        }
         let node = g.node(id)?;
         let depth = depth
             .unwrap_or_else(|| Depth::from_format(if node.base.format == materialcraft_core::OutputFormat::Inherit { g.format } else { node.base.format }));
         let bytes = encode(img, ext, depth, materialcraft_formats::material::srgb_usage(usage))?;
-        out.push(Exported { file: format!("{}.{}", output_name(pattern, &g.name, &ident, usage), ext.trim_start_matches('.')), bytes });
+        out.push(Exported { file, bytes });
     }
     if out.is_empty() {
         return Err(bad("file.export", "the graph has no connected output nodes"));
