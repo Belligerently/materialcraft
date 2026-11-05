@@ -278,10 +278,7 @@ pub fn export_outputs(s: &Session, gi: usize, ext: &str, pattern: &str, depth: O
     }
     let g = pkg.graph(gi)?;
     let dec = s.resource_decoder();
-    let cooked = {
-        let mut cache = s.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        materialcraft_eval::cook(&pkg, gi, &materialcraft_eval::Options::new(&dec), &mut cache)
-    };
+    let cooked = materialcraft_eval::cook(&pkg, gi, &materialcraft_eval::Options::new(&dec), &s.cache);
     let mut out = Vec::new();
     for (id, usage, ident, img) in materialcraft_eval::outputs(g, &cooked) {
         let Some(img) = img else { continue };

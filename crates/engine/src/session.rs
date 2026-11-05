@@ -324,11 +324,7 @@ impl Session {
         let dec = self.resource_decoder();
         let mut opts = Options::new(&dec);
         opts.max_size = self.preview_size;
-        let cooked = {
-            let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-            materialcraft_eval::cook(&self.pkg, self.graph, &opts, &mut cache)
-        };
-        self.cooked = cooked;
+        self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
         self.dirty = false;
         &self.cooked
     }
@@ -337,8 +333,7 @@ impl Session {
     pub fn cook_full(&self, gi: usize) -> Cooked {
         let dec = self.resource_decoder();
         let opts = Options::new(&dec);
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        materialcraft_eval::cook(&self.pkg, gi, &opts, &mut cache)
+        materialcraft_eval::cook(&self.pkg, gi, &opts, &self.cache)
     }
 
     /// Cook if the graph changed since the last cook.

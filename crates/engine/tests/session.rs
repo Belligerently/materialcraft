@@ -294,6 +294,22 @@ fn dynamic_parameters_follow_graph_inputs() {
 }
 
 #[test]
+fn exposed_input_change_recooks_only_readers() {
+    let mut s = sample_session();
+    run(&mut s, "file.new", json!({"template": "rusty_metal", "size": 64}));
+    s.preview_size = None;
+    let u = run(&mut s, "graph.node.add", json!({"def": "uniform", "params": {"mode": 1}}))["id"].as_u64().unwrap();
+    run(&mut s, "graph.exposed.add", json!({"id": "level", "default": {"t": "float", "v": 0.25}}));
+    let f = json!({"nodes": [{"id": 1, "op": "get_var", "value": {"t": "text", "v": "level"}}], "output": 1});
+    run(&mut s, "graph.node.function", json!({"id": u, "param": "color", "function": f}));
+    s.cook();
+    run(&mut s, "graph.exposed.set", json!({"id": "level", "value": 0.75}));
+    s.cook();
+    let recooked: Vec<u64> = s.cooked.nodes.iter().filter(|(_, r)| !r.cached).map(|(id, _)| id.0).collect();
+    assert_eq!(recooked, [u], "only the node reading `level` re-cooks");
+}
+
+#[test]
 fn presets_store_and_restore_inputs() {
     let mut s = sample_session();
     run(&mut s, "file.new", json!({"template": "empty"}));

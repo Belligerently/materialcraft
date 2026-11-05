@@ -72,10 +72,7 @@ pub fn material_bytes(s: &Session, gi: usize, o: &MaterialOptions) -> Result<Vec
     let dec = s.resource_decoder();
     let mut opts = materialcraft_eval::Options::new(&dec);
     opts.inputs = o.inputs.clone();
-    let cooked = {
-        let mut cache = s.cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        materialcraft_eval::cook(&pkg, gi, &opts, &mut cache)
-    };
+    let cooked = materialcraft_eval::cook(&pkg, gi, &opts, &s.cache);
     let mut maps: Vec<(String, Vec<u8>)> = Vec::new();
     let mut entries = Vec::new();
     let mut size = [0, 0];
