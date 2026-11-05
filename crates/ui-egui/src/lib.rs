@@ -23,6 +23,7 @@ pub mod state;
 pub mod theme;
 pub mod thumbs;
 pub mod toolbar;
+pub mod unsaved;
 pub mod view2d;
 pub mod view3d;
 pub mod web_files;
@@ -67,6 +68,10 @@ pub struct MaterialCraftApp {
     pub ui_ms: f32,
     /// The last status message (bottom left).
     pub status: String,
+    /// A package picked in the browser, waiting on the "unsaved changes" dialog: (name, bytes).
+    pub pending_load: Option<(String, Vec<u8>)>,
+    /// The user chose to discard (or saved): the window may close.
+    pub quit_confirmed: bool,
     last_time: f64,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_autosave: f64,
@@ -110,6 +115,8 @@ impl MaterialCraftApp {
             fps: 0.0,
             ui_ms: 0.0,
             status: String::new(),
+            pending_load: None,
+            quit_confirmed: false,
             last_time: 0.0,
             next_autosave,
             styled: None,
@@ -229,6 +236,7 @@ impl MaterialCraftApp {
         if (ctx.zoom_factor() - scale).abs() > 1e-3 {
             ctx.set_zoom_factor(scale);
         }
+        unsaved::handle_close(self, ctx);
         control::poll(self, ctx);
         web_files::poll(self);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
@@ -267,6 +275,10 @@ impl MaterialCraftApp {
         self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
     }
 }
+
+#[cfg(test)]
+#[path = "lib.test.rs"]
+mod tests;
 
 /// `Documents/MaterialCraft/<sub>` in the user's home folder.
 #[cfg(not(target_arch = "wasm32"))]

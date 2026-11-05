@@ -96,6 +96,7 @@ pub fn show(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if app.ui.windows.home {
         home(app, ctx);
     }
+    crate::unsaved::show(app, ctx);
 }
 
 fn modal(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, size: egui::Vec2, body: impl FnOnce(&mut Ui)) {
@@ -622,9 +623,16 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
     }
 }
 
-/// Open a package from a path (recent list, command line).
+/// Open a package from a path (recent list, drag and drop, command line). Asks first when the
+/// open package has unsaved changes.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
+    crate::unsaved::guard(app, crate::unsaved::Guarded::OpenPath { path: path.to_string() });
+}
+
+/// Open a package from a path, replacing the open one (already confirmed).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_path_now(app: &mut MaterialCraftApp, path: &str) {
     if app.run("file.open", json!({"path": path})).is_some() {
         app.ui.add_recent(path);
         app.ui.frame_all = true;
@@ -632,3 +640,7 @@ pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
         after_open(app);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "windows.test.rs"]
+mod tests;

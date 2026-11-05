@@ -57,6 +57,10 @@ pub struct Windows {
     pub preferences: bool,
     pub shortcuts: bool,
     pub home: bool,
+    /// The action waiting on the "unsaved changes" dialog (readable over the control channel;
+    /// never restored from a saved layout).
+    #[serde(skip_deserializing)]
+    pub unsaved: Option<crate::unsaved::Guarded>,
 }
 
 /// The graph view's camera: the graph point at the view's top-left corner, and the zoom.
