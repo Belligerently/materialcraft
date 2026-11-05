@@ -752,6 +752,45 @@ mod tests {
         assert!((second.image(bm, 0).unwrap().mean()[0] - mean).abs() > 0.05);
     }
 
+    fn uniform_graph(name: &str, v: f32) -> Graph {
+        let mut g = Graph::new(name);
+        g.size = [4, 4];
+        let u = g.add_node("uniform", [0.0, 0.0]);
+        g.node_mut(u).unwrap().params.insert("mode".into(), Value::Enum(1));
+        g.node_mut(u).unwrap().params.insert("color".into(), Value::Color([v, v, v, 1.0]));
+        let o = g.add_node("output", [100.0, 0.0]);
+        g.connect(u, "output", o, "input").unwrap();
+        g
+    }
+
+    fn instance_chain(from: &str, to: &str) -> Graph {
+        let mut g = Graph::new(from);
+        g.size = [4, 4];
+        let i = g.add_node("graph_instance", [0.0, 0.0]);
+        g.node_mut(i).unwrap().params.insert("graph".into(), Value::Text(to.into()));
+        let o = g.add_node("output", [100.0, 0.0]);
+        g.connect(i, "output", o, "input").unwrap();
+        g
+    }
+
+    /// Editing a graph that is instanced two levels down must change the top graph's result.
+    #[test]
+    fn nested_instances_see_edits_to_the_innermost_graph() {
+        let mut p = Package::new("p");
+        p.graphs.push(instance_chain("top", "mid"));
+        p.graphs.push(instance_chain("mid", "leaf"));
+        p.graphs.push(uniform_graph("leaf", 0.2));
+        let top_out = p.graphs[0].nodes.iter().find(|n| n.def == "output").unwrap().id;
+        let cache = Mutex::new(Cache::default());
+        let before = cook(&p, 0, &Options::new(&no_res), &cache).image(top_out, 0).unwrap().data[0];
+        assert!((before - 0.2).abs() < 1e-3, "{before}");
+        let leaf = &mut p.graphs[2];
+        let u = leaf.nodes.iter().find(|n| n.def == "uniform").unwrap().id;
+        leaf.node_mut(u).unwrap().params.insert("color".into(), Value::Color([0.7, 0.7, 0.7, 1.0]));
+        let after = cook(&p, 0, &Options::new(&no_res), &cache).image(top_out, 0).unwrap().data[0];
+        assert!((after - 0.7).abs() < 1e-3, "stale cached result: {after}");
+    }
+
     #[test]
     fn input_nodes_read_bound_preview_images() {
         let mut p = Package::new("p");
