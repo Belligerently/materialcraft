@@ -7,9 +7,7 @@ mod delete_tests {
     #[test]
     fn deleting_an_earlier_graph_keeps_the_open_graph_open() {
         let mut s = sample_session();
-        let mut run = |s: &mut crate::Session, id: &str, p: serde_json::Value| {
-            execute(s, id, &p).unwrap_or_else(|e| panic!("{id}: {e}"))
-        };
+        let run = |s: &mut crate::Session, id: &str, p: serde_json::Value| execute(s, id, &p).unwrap_or_else(|e| panic!("{id}: {e}"));
         run(&mut s, "file.new", json!({"template": "empty", "name": "Mine"}));
         for _ in 0..3 {
             run(&mut s, "graph.duplicate", json!({}));
