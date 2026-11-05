@@ -15,6 +15,8 @@ pub struct Cooker {
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// When the running cook started (app seconds).
     pub started: Option<f64>,
+    /// `Session::cook_epoch` when the running cook started.
+    epoch: u64,
 }
 
 impl Cooker {
@@ -31,7 +33,9 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
                 if c.cancelled {
                     // A stopped cook is partial: keep the previous results and cook again.
                     app.session.dirty = true;
-                } else if !app.session.dirty {
+                } else if !app.session.dirty && app.cooker.epoch == app.session.cook_epoch {
+                    // (A synchronous cook, e.g. `session.inspect`, since this one started is newer:
+                    // its results stand and this stale snapshot is dropped.)
                     app.session.cooked = c;
                 }
                 app.cooker.rx = None;
@@ -79,6 +83,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     let pkg = s.pkg.clone();
     let (gi, max) = (s.graph, s.preview_size);
     let cache = s.cache.clone();
+    let epoch = s.cook_epoch;
     let dec = s.resource_decoder();
     let (tx, rx) = std::sync::mpsc::channel();
     let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -94,6 +99,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     match spawned {
         Ok(_) => {
             app.cooker.rx = Some(rx);
+            app.cooker.epoch = epoch;
             app.cooker.cancel = Some(flag);
             app.cooker.started = Some(now);
         }
@@ -109,6 +115,10 @@ fn start(app: &mut MaterialCraftApp, _now: f64) {
     // shortcut: no threads on the web; the cook runs on the UI thread (the page pauses).
     app.session.cook();
 }
+
+#[cfg(test)]
+#[path = "cook.test.rs"]
+mod tests;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "cook_cancellation.test.rs"]
