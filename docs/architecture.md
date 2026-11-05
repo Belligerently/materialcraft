@@ -74,6 +74,14 @@ checks and README screenshots.
 The properties panel builds every parameter editor from the node catalog; the Levels node adds a
 histogram editor with range handles on top of its sliders ([levels-editor.md](levels-editor.md)).
 
+Function math includes `pow2` (2 raised to each input component), `log2` (base-2 logarithm per
+component), and `cartesian` (scalar radius, then angle in radians, returning
+`[radius * cos(angle), radius * sin(angle)]`). They are entries in `function::FN_OPS`, so the
+function editor and the existing `graph.node.param` / `graph.node.function` commands use the same
+CPU evaluator. Nonpositive logarithm inputs and nonfinite results return zero; Cartesian returns
+zero for nonfinite inputs. These primitives extend the native function library; importing SBS
+function graphs remains a separate gap.
+
 ## Files
 
 SBS (`.sbs`, `formats/src/sbs.rs`) is the main project format: XML with the package's graphs, nodes,
