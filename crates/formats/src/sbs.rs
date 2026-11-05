@@ -1092,14 +1092,14 @@ impl<'text> Reader<'text, '_> {
         let unbridged = output_uids.iter().filter(|(uid, _)| !bridgings.iter().any(|(b, _)| b == uid)).map(|(uid, _)| (uid.clone(), first_output.clone()));
         let outputs = bridgings.iter().map(|(uid, identifier)| (uid.clone(), port_for(identifier))).chain(unbridged).collect();
         let mut inputs: HashMap<_, _> = def.inputs.iter().map(|p| (p.id.to_string(), p.id.to_string())).collect();
-        let input_alias = match def.id {
-            "histogram_scan" => Some("Input_1"),
-            "auto_levels" => Some("Input"),
-            _ => None,
+        let input_aliases: &[(&str, &str)] = match def.id {
+            "histogram_scan" => &[("Input_1", "input")],
+            "auto_levels" => &[("Input", "input")],
+            "flood_fill" => &[("mask", "input")],
+            "height_blend" => &[("height_top", "top"), ("height_bottom", "bottom")],
+            _ => &[],
         };
-        if let Some(alias) = input_alias {
-            inputs.insert(alias.to_string(), "input".to_string());
-        }
+        inputs.extend(input_aliases.iter().map(|&(alias, port)| (alias.to_string(), port.to_string())));
         ReadNode { id, index, inputs, outputs, open_inputs: false }
     }
 
