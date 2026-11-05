@@ -33,6 +33,10 @@ pub type Result<T> = std::result::Result<T, FormatError>;
 /// Largest `package.json` and resource accepted when reading (allocation caps).
 const MAX_JSON: u64 = 64 << 20;
 const MAX_RESOURCE: u64 = 256 << 20;
+/// Most resources a package may list, and most resource bytes read from one package in total
+/// (a small deflated entry can expand to [`MAX_RESOURCE`], and many resources may name it).
+const MAX_RESOURCES: usize = 4096;
+const MAX_TOTAL_RESOURCE_BYTES: u64 = 1 << 30;
 
 /// Export file types: (extension, label).
 pub const EXPORT_FORMATS: &[(&str, &str)] =
@@ -41,9 +45,25 @@ pub const EXPORT_FORMATS: &[(&str, &str)] =
 /// Image file extensions [`decode`] reads.
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "tga", "tif", "tiff", "bmp", "webp", "exr", "hdr"];
 
-/// Write a package to `.mcraft` bytes.
+/// Write a package to `.mcraft` bytes. Resources whose sanitized file names collide get a numeric
+/// suffix (`x.png`, `x-2.png`), recorded in the saved `package.json` so they load back.
 pub fn save_package(pkg: &Package) -> Result<Vec<u8>> {
-    let json = serde_json::to_vec_pretty(pkg).map_err(|e| FormatError::Io(e.to_string()))?;
+    let mut pkg = pkg.clone();
+    let mut used = std::collections::HashSet::new();
+    for r in &mut pkg.resources {
+        let base = safe_file_name(&r.file);
+        let mut name = base.clone();
+        let mut n = 2u32;
+        while !used.insert(name.to_lowercase()) {
+            name = match base.rsplit_once('.') {
+                Some((stem, ext)) if !stem.is_empty() => format!("{stem}-{n}.{ext}"),
+                _ => format!("{base}-{n}"),
+            };
+            n = n.saturating_add(1);
+        }
+        r.file = name;
+    }
+    let json = serde_json::to_vec_pretty(&pkg).map_err(|e| FormatError::Io(e.to_string()))?;
     let mut buf = Cursor::new(Vec::new());
     {
         let mut z = zip::ZipWriter::new(&mut buf);
@@ -54,7 +74,7 @@ pub fn save_package(pkg: &Package) -> Result<Vec<u8>> {
         for r in &pkg.resources {
             // Images are already compressed.
             let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-            z.start_file(format!("resources/{}", safe_file_name(&r.file)), stored).map_err(io)?;
+            z.start_file(format!("resources/{}", r.file), stored).map_err(io)?;
             z.write_all(&r.bytes).map_err(|e| FormatError::Io(e.to_string()))?;
         }
         z.finish().map_err(io)?;
@@ -62,7 +82,9 @@ pub fn save_package(pkg: &Package) -> Result<Vec<u8>> {
     Ok(buf.into_inner())
 }
 
-/// Read a package from `.mcraft` bytes.
+/// Read a package from `.mcraft` bytes. Each distinct resource entry is read once and shared by
+/// every resource naming it; a missing entry, an entry over the size cap, too many resources or
+/// too many total bytes is an error (never silently empty or truncated data).
 pub fn load_package(bytes: &[u8]) -> Result<Package> {
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| FormatError::BadPackage(e.to_string()))?;
     let mut json = Vec::new();
@@ -72,13 +94,31 @@ pub fn load_package(bytes: &[u8]) -> Result<Package> {
         .read_to_end(&mut json)
         .map_err(|e| FormatError::Io(e.to_string()))?;
     let mut pkg: Package = serde_json::from_slice(&json).map_err(|e| FormatError::BadPackage(e.to_string()))?;
+    if pkg.resources.len() > MAX_RESOURCES {
+        return Err(FormatError::BadPackage(format!("{} resources (limit {MAX_RESOURCES})", pkg.resources.len())));
+    }
+    let mut cache: std::collections::HashMap<String, Arc<Vec<u8>>> = std::collections::HashMap::new();
+    let mut total = 0u64;
     for r in &mut pkg.resources {
         let name = format!("resources/{}", safe_file_name(&r.file));
-        let mut data = Vec::new();
-        if let Ok(mut f) = z.by_name(&name) {
-            f.by_ref().take(MAX_RESOURCE).read_to_end(&mut data).map_err(|e| FormatError::Io(e.to_string()))?;
+        if let Some(data) = cache.get(&name) {
+            r.bytes = data.clone();
+            continue;
         }
-        r.bytes = Arc::new(data);
+        let mut data = Vec::new();
+        let mut f = z.by_name(&name).map_err(|_| FormatError::BadPackage(format!("resource `{}` ({name}) is missing from the package", r.name)))?;
+        f.by_ref().take(MAX_RESOURCE + 1).read_to_end(&mut data).map_err(|e| FormatError::Io(e.to_string()))?;
+        drop(f);
+        if data.len() as u64 > MAX_RESOURCE {
+            return Err(FormatError::BadPackage(format!("resource `{}` is larger than {} MiB", r.name, MAX_RESOURCE >> 20)));
+        }
+        total = total.saturating_add(data.len() as u64);
+        if total > MAX_TOTAL_RESOURCE_BYTES {
+            return Err(FormatError::BadPackage(format!("the package's resources exceed {} MiB in total", MAX_TOTAL_RESOURCE_BYTES >> 20)));
+        }
+        let data = Arc::new(data);
+        cache.insert(name, data.clone());
+        r.bytes = data;
     }
     Ok(pkg)
 }
@@ -248,6 +288,54 @@ mod tests {
         let img = decode(&q.resources[0].bytes).unwrap();
         assert!((img.get(0, 0, false)[1] - 0.5).abs() < 0.01);
         assert!(load_package(b"not a zip").is_err());
+    }
+
+    fn zip_with(resources: &[(&str, &str)], entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut p = Package::new("T");
+        for (n, f) in resources {
+            p.resources.push(Resource { name: (*n).into(), file: (*f).into(), bytes: Arc::new(Vec::new()) });
+        }
+        let json = serde_json::to_vec(&p).unwrap();
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut z = zip::ZipWriter::new(&mut buf);
+            let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            z.start_file("package.json", o).unwrap();
+            z.write_all(&json).unwrap();
+            for (n, b) in entries {
+                z.start_file(*n, o).unwrap();
+                z.write_all(b).unwrap();
+            }
+            z.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn many_resources_naming_one_entry_are_capped_and_shared() {
+        let many: Vec<(String, String)> = (0..MAX_RESOURCES + 1).map(|i| (format!("r{i}"), "big.png".to_string())).collect();
+        let refs: Vec<(&str, &str)> = many.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        assert!(load_package(&zip_with(&refs, &[("resources/big.png", &[1u8; 16])])).is_err());
+        let few = [("a", "big.png"), ("b", "big.png"), ("c", "big.png")];
+        let p = load_package(&zip_with(&few, &[("resources/big.png", &[1u8; 1024])])).unwrap();
+        assert!(Arc::ptr_eq(&p.resources[0].bytes, &p.resources[2].bytes));
+    }
+
+    #[test]
+    fn missing_resource_entry_is_an_error() {
+        assert!(load_package(&zip_with(&[("a", "gone.png")], &[])).is_err());
+    }
+
+    #[test]
+    fn colliding_resource_file_names_save_and_load() {
+        let mut p = Package::new("T");
+        for (n, f, b) in [("a", "a/x.png", 1u8), ("b", "b/x.png", 2)] {
+            p.resources.push(Resource { name: n.into(), file: f.into(), bytes: Arc::new(vec![b; 8]) });
+        }
+        let q = load_package(&save_package(&p).unwrap()).unwrap();
+        assert_eq!(q.resources[0].bytes[0], 1);
+        assert_eq!(q.resources[1].bytes[0], 2);
+        assert_ne!(q.resources[0].file, q.resources[1].file);
     }
 
     #[test]
