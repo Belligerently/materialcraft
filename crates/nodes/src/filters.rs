@@ -9,6 +9,10 @@ use crate::atomic::{height_to_normal, levels_fn, transform_sample};
 use crate::catalog::{CookResult, Ctx, NodeDef, PortKind, node};
 use crate::ops;
 
+#[cfg(test)]
+#[path = "filters.test.rs"]
+mod tests;
+
 const ADJ: &str = "Filters/Adjustments";
 const BLENDING: &str = "Filters/Blending";
 const BLURS: &str = "Filters/Blurs";
@@ -800,6 +804,10 @@ fn normal_blend(ctx: &Ctx) -> CookResult {
         // Reoriented normal mapping (Barré-Brisebois & Hill).
         let t = [b[0], b[1], b[2] + 1.0];
         let u = [-d[0], -d[1], d[2]];
+        // A base normal pointing straight away (z = -1) has no reorientation; keep it.
+        if t[2].abs() < 1e-4 {
+            return pack(b, 1.0);
+        }
         let dot = t[0] * u[0] + t[1] * u[1] + t[2] * u[2];
         let r = [t[0] * dot / t[2] - u[0], t[1] * dot / t[2] - u[1], t[2] * dot / t[2] - u[2]];
         pack(r, 1.0)
