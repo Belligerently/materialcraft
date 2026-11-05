@@ -293,7 +293,7 @@ fn preferences(app: &mut MaterialCraftApp, ctx: &egui::Context) {
             tr("Preview size while editing"),
             if p.preview_size == 0 { tr("Full size").to_string() } else { format!("{} px", p.preview_size) },
             |ui| {
-                for s in [256u32, 512, 1024, 2048, 0] {
+                for s in [256u32, 512, 1024, 2048, 4096, 0] {
                     let label = if s == 0 { tr("Full size").to_string() } else { format!("{s} px") };
                     ui.selectable_value(&mut p.preview_size, s, label);
                 }

@@ -141,6 +141,8 @@ fn menus(app: &mut MaterialCraftApp, ui: &mut Ui) {
                 }
             });
             ui.menu_button(tr("Display"), |ui| {
+                crate::view2d::resolution_menu(app, ui);
+                ui.separator();
                 ui.checkbox(&mut app.view3d.show_env, tr("Environment background"));
                 ui.separator();
                 let mut t = app.session.view3d.transparency;
