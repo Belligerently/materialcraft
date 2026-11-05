@@ -242,7 +242,11 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         "command.run" => {
             let Some(id) = p.get("id").and_then(Value::as_str) else { return err("`id` is required") };
             let params = p.get("params").cloned().unwrap_or(Value::Null);
-            match crate::cook::execute_guarded(&mut app.session, id, &params) {
+            // Each request ends its own coalescing run, including failed requests.
+            app.session.end_merge();
+            let r = crate::cook::execute_guarded(&mut app.session, id, &params);
+            app.session.end_merge();
+            match r {
                 Ok(v) => {
                     if id == "view.previewSize" {
                         app.ui.prefs.preview_size = app.session.preview_size.unwrap_or(0);
