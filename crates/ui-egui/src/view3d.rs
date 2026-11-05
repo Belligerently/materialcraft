@@ -141,6 +141,11 @@ fn menus(app: &mut MaterialCraftApp, ui: &mut Ui) {
                 }
             });
             ui.menu_button(tr("Display"), |ui| {
+                let mut flip = app.session.view3d.normal_y_flip;
+                if ui.checkbox(&mut flip, tr("Flip normal map Y (DirectX)")).changed() {
+                    app.run("view.3d", json!({"normalYFlip": flip}));
+                }
+                ui.separator();
                 ui.checkbox(&mut app.view3d.show_env, tr("Environment background"));
                 ui.separator();
                 let mut t = app.session.view3d.transparency;
@@ -278,6 +283,7 @@ fn content_key(app: &MaterialCraftApp, w: u32, h: u32, show_env: bool) -> u64 {
     let mut hs = DefaultHasher::new();
     let v = &app.session.view3d;
     (w, h, show_env, &v.scene, &v.environment, app.session.custom_mesh.as_ref().map(|(n, _)| n), v.transparency, v.alpha_view).hash(&mut hs);
+    v.normal_y_flip.hash(&mut hs);
     for f in [v.yaw, v.pitch, v.distance, v.target[0], v.target[1], v.target[2], v.tiling, v.exposure, v.env_rotation, v.height_scale] {
         f.to_bits().hash(&mut hs);
     }
@@ -364,6 +370,7 @@ fn inputs(app: &mut MaterialCraftApp, supersample: u32) -> Option<(Arc<Scene>, A
         exposure: v.exposure,
         env_rotation: v.env_rotation,
         height_scale: v.height_scale,
+        normal_y_flip: v.normal_y_flip,
         show_env: app.view3d.show_env,
         supersample,
         transparency: v.transparency,

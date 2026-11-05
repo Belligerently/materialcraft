@@ -258,6 +258,7 @@ impl Headless {
             exposure: v.exposure,
             env_rotation: v.env_rotation,
             height_scale: v.height_scale,
+            normal_y_flip: v.normal_y_flip,
             show_env: false,
             supersample: 2,
             transparency: v.transparency,

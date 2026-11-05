@@ -29,7 +29,7 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
             "3D view settings",
             [],
             None,
-            "{scene? (cube|cylinder|plane|sphere|material_ball|rounded_cube|torus), tiling?, yaw?, pitch?, distance?, target? ([x, y, z] orbit point in mesh radii from its center, within the pan limit preference), environment? (studio|sunset|overcast|night), envRotation?, exposure?, heightScale?, axis?, grid?, transparency? (see through where alpha < 1), alphaView? (show the alpha channel)}",
+            "{scene? (cube|cylinder|plane|sphere|material_ball|rounded_cube|torus), tiling?, yaw?, pitch?, distance?, target? ([x, y, z] orbit point in mesh radii from its center, within the pan limit preference), environment? (studio|sunset|overcast|night), envRotation?, exposure?, heightScale?, normalYFlip? (DirectX normal maps; default false/OpenGL), axis?, grid?, transparency? (see through where alpha < 1), alphaView? (show the alpha channel)}",
             always,
             view3d
         ),
@@ -137,6 +137,9 @@ fn view3d(s: &mut Session, p: &J) -> Result<J> {
     }
     if let Some(t) = f32p(p, "heightScale") {
         v.height_scale = t.clamp(0.0, 0.5);
+    }
+    if let Some(flip) = boolp(p, "normalYFlip") {
+        v.normal_y_flip = flip;
     }
     if let Some(b) = boolp(p, "axis") {
         v.show_axis = b;

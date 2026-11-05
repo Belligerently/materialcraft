@@ -34,6 +34,8 @@ pub struct View3d {
     pub exposure: f32,
     /// Parallax depth of the height output (0 = off).
     pub height_scale: f32,
+    /// Flip green when reading DirectX normal maps; false matches the Normal node's OpenGL default.
+    pub normal_y_flip: bool,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -56,6 +58,7 @@ impl Default for View3d {
             env_rotation: 0.0,
             exposure: 0.0,
             height_scale: 0.012,
+            normal_y_flip: false,
             show_axis: false,
             show_grid: false,
             transparency: true,
