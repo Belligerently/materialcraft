@@ -119,6 +119,14 @@ pub fn invoke(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) {
         return;
     }
     match id {
+        "edit.copy" | "edit.cut" => {
+            if let Some(result) = app.run(id, Value::Null)
+                && let Some(clip) = result.get("clip")
+            {
+                // Native paste emits no event when the system clipboard is empty.
+                ctx.copy_text(clip.to_string());
+            }
+        }
         "ui.newGraph" => app.ui.windows.new_graph = true,
         "ui.export" => app.ui.windows.export = true,
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
@@ -248,7 +256,22 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
-    if !ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))) {
+    let mut fire: Vec<&str> = Vec::new();
+    // Native and web backends translate clipboard chords into these events rather than keys.
+    // Leave them for TextEdit when it owns the keyboard (the guard above).
+    ctx.input_mut(|i| {
+        i.events.retain(|event| {
+            let id = match event {
+                egui::Event::Copy => "edit.copy",
+                egui::Event::Cut => "edit.cut",
+                egui::Event::Paste(_) => "edit.paste",
+                _ => return true,
+            };
+            fire.push(id);
+            false
+        });
+    });
+    if fire.is_empty() && !ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))) {
         return;
     }
     // Selected wires take Delete and Backspace before the node commands do, and X swaps them.
@@ -270,10 +293,9 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     }
     // Longer chords first, so Ctrl+Shift+S is not taken by Ctrl+S.
     table.sort_by_key(|(_, sc)| std::cmp::Reverse(sc.modifiers.ctrl as u8 + sc.modifiers.shift as u8 + sc.modifiers.alt as u8 + sc.modifiers.command as u8));
-    let mut fire: Vec<&str> = Vec::new();
     ctx.input_mut(|i| {
         for (id, sc) in &table {
-            if i.consume_shortcut(sc) {
+            if i.consume_shortcut(sc) && !fire.contains(id) {
                 fire.push(*id);
             }
         }

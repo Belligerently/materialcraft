@@ -1258,7 +1258,11 @@ fn node_menu(app: &mut MaterialCraftApp, ui: &mut Ui, id: NodeId) {
     }
     let mut item = |ui: &mut Ui, label: &str, cmd: &str, params: serde_json::Value| {
         if ui.button(tr(label)).clicked() {
-            app.run(cmd, params);
+            if cmd == "edit.copy" {
+                crate::menus::invoke(app, ui.ctx(), cmd);
+            } else {
+                app.run(cmd, params);
+            }
             ui.close();
         }
     };
