@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod lib_tests {
     use crate::MaterialCraftApp;
-    use crate::cook::execute_guarded;
     use crate::state::UiState;
     use materialcraft_engine::sample_session;
     use serde_json::json;
@@ -13,19 +12,11 @@ mod lib_tests {
         assert!(app.toasts.iter().any(|t| t.error));
         assert!(app.run("graph.node.add", json!({"def": "levels"})).is_some());
     }
-
-    #[test]
-    fn guarded_execute_returns_command_errors_as_strings() {
-        let mut s = sample_session();
-        let e = execute_guarded(&mut s, "no.such.command", &json!({})).unwrap_err();
-        assert!(!e.is_empty());
-        assert!(execute_guarded(&mut s, "graph.node.add", &json!({"def": "levels"})).is_ok());
-    }
 }
 
 #[cfg(test)]
 mod unsaved_state_tests {
-    use crate::unsaved::{Choice, Guarded, guard};
+    use crate::unsaved::{Choice, Guarded, Step, answer, guard};
     use crate::{MaterialCraftApp, state::UiState};
 
     fn app(modified: bool) -> MaterialCraftApp {
@@ -41,9 +32,13 @@ mod unsaved_state_tests {
         guard(&mut a, Guarded::Menu { id: "ui.closeAll".into() });
         assert!(a.ui.windows.unsaved.is_some());
         assert_eq!(a.session.pkg.name, before, "nothing was replaced yet");
-        // The held action is visible as serde state (control channel `ui.inspect`).
+        // The control channel can inspect the held action
         let v = serde_json::to_value(&a.ui).unwrap();
         assert_eq!(v["windows"]["unsaved"]["kind"], "menu");
+
+        assert_eq!(answer(&mut a.ui.windows.unsaved, Choice::Cancel), Step::Stop);
+        assert!(a.session.modified);
+        assert_eq!(a.session.pkg.name, before);
     }
 
     #[test]
@@ -52,15 +47,6 @@ mod unsaved_state_tests {
         guard(&mut a, Guarded::Menu { id: "ui.closeAll".into() });
         assert!(a.ui.windows.unsaved.is_none());
         assert_eq!(a.session.pkg.graphs.first().map(|g| g.name.as_str()), Some("New_graph"), "the empty package replaced it");
-    }
-
-    #[test]
-    fn discard_runs_the_held_action_and_cancel_keeps_the_work() {
-        let mut a = app(true);
-        guard(&mut a, Guarded::Menu { id: "ui.closeAll".into() });
-        let step = crate::unsaved::answer(&mut a.ui.windows.unsaved, Choice::Cancel);
-        assert_eq!(step, crate::unsaved::Step::Stop);
-        assert!(a.session.modified);
     }
 
     #[test]

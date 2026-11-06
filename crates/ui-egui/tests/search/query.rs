@@ -1,6 +1,4 @@
 //! Resetting the search selection must also reveal it in a previously scrolled list.
-#[path = "common/search.rs"]
-mod search;
 use egui::{Event, Key, Modifiers};
 use egui_kittest::{Harness, kittest::Queryable};
 use materialcraft_ui_egui::MaterialCraftApp;
@@ -17,7 +15,7 @@ fn filter_after_scrolling(h: &mut Harness<'static, MaterialCraftApp>) {
     h.event(Event::Text("blur".into()));
     h.step();
     h.run_steps(25);
-    assert!(search::label_position(h, "Blur").is_some(), "selected first filtered result is offscreen");
+    assert!(super::label_position(h, "Blur").is_some(), "selected first filtered result is offscreen");
 }
 fn assert_inserted(h: &mut Harness<'static, MaterialCraftApp>, def: &str) {
     h.key_press(Key::Enter);
@@ -28,13 +26,14 @@ fn assert_inserted(h: &mut Harness<'static, MaterialCraftApp>, def: &str) {
 }
 #[test]
 fn filtering_after_scrolling_reveals_and_inserts_first_match() {
-    let mut h = search::harness(false);
+    let mut h = super::harness();
     filter_after_scrolling(&mut h);
+    super::save_snapshot(&mut h, "filtered-first-result");
     assert_inserted(&mut h, "blur");
 }
 #[test]
 fn clearing_a_scrolled_query_reveals_and_inserts_first_match() {
-    let mut h = search::harness(false);
+    let mut h = super::harness();
     h.event(Event::Text("blur".into()));
     h.step();
     scroll(&mut h, 15);
@@ -43,12 +42,12 @@ fn clearing_a_scrolled_query_reveals_and_inserts_first_match() {
     h.key_press(Key::Backspace);
     h.step();
     h.run_steps(25);
-    assert!(search::label_position(&h, "Bitmap").is_some(), "selected first result is offscreen after clearing");
+    assert!(super::label_position(&h, "Bitmap").is_some(), "selected first result is offscreen after clearing");
     assert_inserted(&mut h, "bitmap");
 }
 #[test]
 fn reopening_a_scrolled_search_reveals_first_match() {
-    let mut h = search::harness(false);
+    let mut h = super::harness();
     scroll(&mut h, 45);
     h.key_press(Key::Escape);
     h.step();
@@ -57,15 +56,6 @@ fn reopening_a_scrolled_search_reveals_first_match() {
     h.step();
     h.run_steps(25);
     assert!(h.get_by_label("Search nodes").rect().width() > 0.0);
-    assert!(search::label_position(&h, "Bitmap").is_some(), "selected first result is offscreen after reopening");
+    assert!(super::label_position(&h, "Bitmap").is_some(), "selected first result is offscreen after reopening");
     assert_inserted(&mut h, "bitmap");
-}
-#[test]
-#[ignore = "requires an offscreen GPU"]
-fn filtered_first_result_screenshot() {
-    let mut h = search::harness(true);
-    filter_after_scrolling(&mut h);
-    let dir = std::path::PathBuf::from(std::env::var_os("MC_SNAPSHOT_DIR").expect("set MC_SNAPSHOT_DIR"));
-    std::fs::create_dir_all(&dir).unwrap();
-    h.render().unwrap().save(dir.join("filtered-first-result.png")).unwrap();
 }

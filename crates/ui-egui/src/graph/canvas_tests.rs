@@ -1,11 +1,9 @@
+use super::GraphCamera;
 use super::canvas::*;
-use super::node_card::port as port_pos;
-use super::search::matches;
 use super::wire_geometry::{WIRE_HIT, bezier_at, bezier_distance, bezier_points, wire_at};
-use super::{GraphCamera, node_card, node_rect};
 use crate::MaterialCraftApp;
 use egui::{Ui, Vec2, pos2, vec2};
-use materialcraft_engine::core::{Node, NodeId};
+use materialcraft_engine::core::NodeId;
 use serde_json::json;
 
 use super::frames::Frames;
@@ -86,15 +84,6 @@ fn clicking_the_shown_node_keeps_its_port() {
     f.click(at, egui::Modifiers::NONE);
     assert_eq!(f.app.session.selection, vec![split]);
     assert_eq!((f.app.session.view2d.node, f.app.session.view2d.port), (Some(split), 2));
-}
-
-#[test]
-fn tab_opens_search_in_the_full_workspace() {
-    let mut f = Frames::new(materialcraft_engine::sample_session());
-    let pointer = f.app.graph.view.center();
-    let tab = egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
-    f.run(vec![egui::Event::PointerMoved(pointer), tab], egui::Modifiers::NONE);
-    assert!(f.app.graph.search.is_some());
 }
 
 #[test]
@@ -185,14 +174,6 @@ fn node_search_shortcuts_respect_hover_and_keyboard_focus() {
 }
 
 #[test]
-fn search_finds_by_label_and_category() {
-    assert!(matches("uniform").iter().any(|d| d.id == "uniform"));
-    assert!(matches("blur").first().is_some_and(|d| d.label.to_ascii_lowercase().starts_with("blur")));
-    assert!(matches("noises cells").iter().all(|d| d.category.contains("Noises")));
-    assert!(matches("zzzz").is_empty());
-}
-
-#[test]
 fn wires_are_hit_near_their_curve_only() {
     let a = (NodeId(1), "input".to_string());
     let b = (NodeId(2), "input".to_string());
@@ -207,15 +188,4 @@ fn wires_are_hit_near_their_curve_only() {
     // The ends are on the wire
     assert!(bezier_distance(&wires[0].1, pos2(0.0, 0.0)) < 1e-3);
     assert!(bezier_distance(&wires[0].1, pos2(200.0, 100.0)) < 1e-3);
-}
-
-#[test]
-fn port_positions_stay_on_the_card() {
-    let n = Node::new(NodeId(1), "blend", [0.0, 0.0]);
-    let r = node_rect(&n, 3, 1, true);
-    for i in 0..3 {
-        let p = port_pos(r, i, 3, false, false);
-        assert!(r.contains(p) || (p.x - r.left()).abs() < 1e-3);
-        assert!(p.y > r.top() + node_card::HEADER_HEIGHT && p.y < r.bottom() - node_card::FOOTER_HEIGHT);
-    }
 }

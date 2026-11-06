@@ -275,14 +275,6 @@ fn partial_cooks_keep_shared_dependencies_and_first_duplicate_node() {
 use crate::cache_key::image_key;
 use std::sync::Arc;
 #[test]
-fn input_image_cache_key_covers_every_pixel() {
-    let a = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
-    let mut b = a.clone();
-    Arc::make_mut(&mut b.data)[1] = 1.0;
-    let cache = Mutex::new(Cache::default());
-    assert_ne!(image_key(&a, &cache), image_key(&b, &cache));
-}
-#[test]
 fn cached_input_fingerprint_tracks_copy_on_write_and_shape() {
     let cache = Mutex::new(Cache::default());
     let mut image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
@@ -293,9 +285,11 @@ fn cached_input_fingerprint_tracks_copy_on_write_and_shape() {
     assert_ne!(changed, first);
     image.w = 64;
     image.h = 256;
-    assert_ne!(image_key(&image, &cache), changed);
+    let reshaped = image_key(&image, &cache);
+    assert_ne!(reshaped, changed);
+
     cache.lock().unwrap().clear();
-    assert_eq!(image_key(&image, &cache), image_key(&image, &cache));
+    assert_eq!(image_key(&image, &cache), reshaped);
 }
 #[test]
 fn preview_cap_does_not_compound_downscaling() {

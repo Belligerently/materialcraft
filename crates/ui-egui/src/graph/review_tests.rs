@@ -241,7 +241,9 @@ fn canvas_frame_cost() {
             crate::theme::install(&context);
             let mut frame = || {
                 let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() };
-                std::hint::black_box(context.run_ui(input, |ui| super::show(&mut app, ui)));
+                let mut output = context.run_ui(input, |ui| super::show(&mut app, ui));
+                output.textures_delta.clear();
+                std::hint::black_box(output);
             };
             for _ in 0..3 {
                 frame();
@@ -312,11 +314,12 @@ fn properties_and_library_follow_the_active_embedded_function() {
     let label = materialcraft_engine::nodes::function::definition("const_float1").unwrap().label;
     assert!(crate::properties::title(&frames.app).starts_with(label));
     frames.app.ui.library_search.clear();
-    let output = frames
+    let mut output = frames
         .ctx
         .run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 800.0))), ..Default::default() }, |ui| {
             crate::library::show(&mut frames.app, ui)
         });
+    output.textures_delta.clear();
     assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("Search functions"))));
     menus::invoke(&mut frames.app, &frames.ctx, "ui.graph.parent");
     assert_eq!(EditorTarget::resolve(&frames.app), EditorTarget::Material);

@@ -28,10 +28,12 @@ impl Frames {
         let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 960.0)));
         let input = egui::RawInput { events, screen_rect, time: Some(self.time), ..Default::default() };
         let app = &mut self.app;
-        let output = self.ctx.run_ui(input, |ui| {
+        let mut output = self.ctx.run_ui(input, |ui| {
             app.step(&ui.ctx().clone());
             app.draw(ui);
         });
+        // These interaction tests inspect shapes without uploading textures
+        output.textures_delta.clear();
         self.canvas_text = output
             .shapes
             .iter()

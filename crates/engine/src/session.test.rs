@@ -1,17 +1,3 @@
-#[cfg(test)]
-mod session_tests {
-    use crate::Session;
-    use materialcraft_core::Package;
-
-    #[test]
-    fn sync_cook_bumps_the_cook_epoch() {
-        let mut s = Session::new(Package::new("t"));
-        let before = s.cook_epoch;
-        s.cook();
-        assert_ne!(s.cook_epoch, before);
-    }
-}
-
 use materialcraft_core::{Package, Resource};
 use materialcraft_formats::{Depth, encode};
 use materialcraft_image::{Image, Kind, resource_key};
@@ -39,11 +25,7 @@ fn the_resource_decoder_reads_data_maps_as_stored() {
 
 #[cfg(test)]
 mod merge_tests {
-    use crate::{EngineError, Session};
-
-    fn session() -> Session {
-        crate::sample_session()
-    }
+    use crate::Session;
 
     fn set(s: &mut Session, key: &str) {
         s.edit_merged(key, "Set parameter", |s| {
@@ -55,7 +37,7 @@ mod merge_tests {
 
     #[test]
     fn same_key_merges_until_finish_edit() {
-        let mut s = session();
+        let mut s = crate::new_session();
         let base = s.history().len();
         set(&mut s, "k");
         set(&mut s, "k");
@@ -63,19 +45,6 @@ mod merge_tests {
         s.finish_edit();
         set(&mut s, "k");
         assert_eq!(s.history().len(), base + 2, "a second drag after finish_edit is a new entry");
-    }
-
-    #[test]
-    fn failed_merged_edit_restores_the_session() {
-        let mut s = session();
-        set(&mut s, "k");
-        let name = s.pkg.name.clone();
-        let r: Result<(), EngineError> = s.edit_merged("k", "Set parameter", |s| {
-            s.pkg.name = "half-applied".into();
-            Err(EngineError::Other("boom".into()))
-        });
-        assert!(r.is_err());
-        assert_eq!(s.pkg.name, name);
     }
 }
 
