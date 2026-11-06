@@ -77,8 +77,15 @@ pub fn read_material(bytes: &[u8]) -> Result<(Manifest, Vec<u8>)> {
     let bad = |m: String| FormatError::BadPackage(format!("portable material: {m}"));
     let mut z = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| bad(e.to_string()))?;
     let mut read = |name: &str, cap: u64| -> Result<Vec<u8>> {
+        let entry = z.by_name(name).map_err(|_| bad(format!("{name} is missing")))?;
+        if entry.size() > cap {
+            return Err(bad(format!("{name} exceeds {cap} bytes")));
+        }
         let mut data = Vec::new();
-        z.by_name(name).map_err(|_| bad(format!("{name} is missing")))?.take(cap).read_to_end(&mut data).map_err(|e| FormatError::Io(e.to_string()))?;
+        entry.take(cap + 1).read_to_end(&mut data).map_err(|e| FormatError::Io(e.to_string()))?;
+        if data.len() as u64 > cap {
+            return Err(bad(format!("{name} exceeds {cap} bytes")));
+        }
         Ok(data)
     };
 

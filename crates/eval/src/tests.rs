@@ -271,3 +271,102 @@ fn partial_cooks_keep_shared_dependencies_and_first_duplicate_node() {
         assert!(cooked.image(id, 0).is_some());
     }
 }
+
+use crate::cache_key::image_key;
+use std::sync::Arc;
+#[test]
+fn input_image_cache_key_covers_every_pixel() {
+    let a = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+    let mut b = a.clone();
+    Arc::make_mut(&mut b.data)[1] = 1.0;
+    let cache = Mutex::new(Cache::default());
+    assert_ne!(image_key(&a, &cache), image_key(&b, &cache));
+}
+#[test]
+fn cached_input_fingerprint_tracks_copy_on_write_and_shape() {
+    let cache = Mutex::new(Cache::default());
+    let mut image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+    let first = image_key(&image, &cache);
+    assert_eq!(image_key(&image, &cache), first);
+    Arc::make_mut(&mut image.data)[1] = 1.0;
+    let changed = image_key(&image, &cache);
+    assert_ne!(changed, first);
+    image.w = 64;
+    image.h = 256;
+    assert_ne!(image_key(&image, &cache), changed);
+    cache.lock().unwrap().clear();
+    assert_eq!(image_key(&image, &cache), image_key(&image, &cache));
+}
+#[test]
+fn preview_cap_does_not_compound_downscaling() {
+    let (mut p, noise, blur, out) = sample();
+    p.graphs[0].size = [10, 10];
+    p.graphs[0].node_mut(blur).unwrap().base.size = [-3, -3];
+    let cache = Mutex::new(Cache::default());
+    let mut opts = Options::new(&no_res);
+    opts.max_size = Some(512);
+    let c = cook(&p, 0, &opts, &cache);
+    assert_eq!(c.image(noise, 0).map(|i| (i.w, i.h)), Some((512, 512)));
+    assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((128, 128)));
+    assert_eq!(c.image(out, 0).map(|i| (i.w, i.h)), Some((128, 128)));
+}
+#[test]
+fn preview_cap_uses_nominal_dimensions_through_bypassed_nodes() {
+    let (mut p, noise, blur, out) = sample();
+    p.graphs[0].size = [13, 12];
+    p.graphs[0].node_mut(blur).unwrap().disabled = true;
+    p.graphs[0].node_mut(out).unwrap().base.size = [1, 0];
+    let cache = Mutex::new(Cache::default());
+    let mut opts = Options::new(&no_res);
+    opts.max_size = Some(128);
+    let c = cook(&p, 0, &opts, &cache);
+    assert_eq!(c.image(noise, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+    assert_eq!(c.image(blur, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+    assert_eq!(c.image(out, 0).map(|i| (i.w, i.h)), Some((128, 64)));
+}
+#[test]
+fn changed_unsampled_input_recooks() {
+    let mut g = Graph::new("g");
+    g.size = [7, 7];
+    let input = g.add_node("input_grayscale", [0.0, 0.0]);
+    let mut p = Package::new("p");
+    p.graphs.push(g);
+    let mut opts = Options::new(&no_res);
+    let image = Image::filled(128, 128, Kind::Gray, [0.0; 4]);
+    opts.inputs.insert("input".into(), image.clone());
+    let cache = Mutex::new(Cache::default());
+    let first = cook(&p, 0, &opts, &cache);
+    assert!(!first.nodes[&input].cached);
+    let mut changed = image;
+    Arc::make_mut(&mut changed.data)[1] = 1.0;
+    opts.inputs.insert("input".into(), changed);
+    let second = cook(&p, 0, &opts, &cache);
+    assert!(!second.nodes[&input].cached);
+    assert_eq!(second.image(input, 0).unwrap().data[1], 1.0);
+}
+#[test]
+fn linear_input_images_and_bitmap_nodes_request_data_reads() {
+    // The decoder returns 0.5 for a linear request and 0.2 for an sRGB one.
+    let res = |k: &str| {
+        let (name, linear) = materialcraft_image::split_resource_key(k);
+        (name == "m").then(|| Image::filled(4, 4, Kind::Color, [if linear { 0.5 } else { 0.2 }; 4]))
+    };
+    let mut p = Package::new("p");
+    let mut g = Graph::new("g");
+    g.size = [4, 4];
+    let i = g.add_node("input_color", [0.0, 0.0]);
+    g.node_mut(i).unwrap().params.insert("identifier".into(), Value::Text("n".into()));
+    let b = g.add_node("bitmap", [0.0, 100.0]);
+    g.node_mut(b).unwrap().params.insert("resource".into(), Value::Text("m".into()));
+    g.input_images.insert("n".into(), "m".into());
+    p.graphs.push(g);
+    let first = |p: &Package| {
+        let cache = Mutex::new(Cache::default());
+        let c = cook(p, 0, &Options::new(&res), &cache);
+        (c.image(i, 0).unwrap().data[0], c.image(b, 0).unwrap().data[0])
+    };
+    assert_eq!(first(&p), (0.2, 0.2), "default is sRGB, as before");
+    p.graphs[0].input_images_linear.insert("n".into());
+    p.graphs[0].node_mut(b).unwrap().params.insert("colour_space".into(), Value::Enum(1));
+    assert_eq!(first(&p), (0.5, 0.5));
+}

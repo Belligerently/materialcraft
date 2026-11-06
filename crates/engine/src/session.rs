@@ -33,8 +33,10 @@ pub struct View3d {
     pub environment: String,
     pub env_rotation: f32,
     pub exposure: f32,
-    /// Parallax depth of the height output (0 = off).
+    /// Height relief in mesh radii
     pub height_scale: f32,
+    pub height_level: f32,
+    pub normal_y_flip: bool,
     pub show_axis: bool,
     pub show_grid: bool,
     /// See through the mesh where the material's alpha (opacity output, else base color alpha)
@@ -56,7 +58,9 @@ impl Default for View3d {
             environment: "studio".into(),
             env_rotation: 0.0,
             exposure: 0.0,
-            height_scale: 0.012,
+            height_scale: 0.04,
+            height_level: 0.0,
+            normal_y_flip: false,
             show_axis: false,
             show_grid: false,
             transparency: true,
@@ -141,6 +145,8 @@ pub struct Session {
     pub cooked: Cooked,
     /// Set when the graph changed and needs cooking.
     pub dirty: bool,
+    /// Synchronous cooks invalidate older worker results
+    pub cook_epoch: u64,
     /// Cooked node outputs, shared with background cooks.
     pub cache: Arc<Mutex<Cache>>,
     /// A mesh loaded for the 3D view (`scene: "custom"`): its file name and geometry.
@@ -149,7 +155,8 @@ pub struct Session {
     redo: Vec<Snapshot>,
     /// Edits with the same key coalesce into one undo step (slider drags).
     merge_key: Option<String>,
-    decoded: Arc<Mutex<HashMap<u64, Image>>>,
+    group: Option<(Snapshot, bool)>,
+    decoded: Arc<Mutex<HashMap<(u64, bool), Image>>>,
 }
 
 impl Session {
@@ -174,11 +181,13 @@ impl Session {
             embedded_clipboard: None,
             cooked: Cooked::default(),
             dirty: true,
+            cook_epoch: 0,
             cache: Arc::new(Mutex::new(Cache::default())),
             custom_mesh: None,
             undo: Vec::new(),
             redo: Vec::new(),
             merge_key: None,
+            group: None,
             decoded: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -200,6 +209,9 @@ impl Session {
             annotation_selection: self.annotation_selection,
             material_preview: self.material_preview.clone(),
             label: label.into(),
+            modified: self.modified,
+            dirty: self.dirty,
+            cook_epoch: self.cook_epoch,
         }
     }
 
@@ -212,10 +224,16 @@ impl Session {
     /// Like [`Session::edit`], but consecutive edits with the same `key` (dragging one slider)
     /// make a single undo step.
     pub fn edit_merged<T>(&mut self, key: &str, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            return self.edit_inner(label, f);
+        }
         if self.merge_key.as_deref() == Some(key) && !self.undo.is_empty() {
+            // Preserve the gesture snapshot while rolling back failed edits
+            let snap = self.snapshot(label);
             let r = f(self);
-            if r.is_ok() {
-                self.changed();
+            match &r {
+                Ok(_) => self.changed(),
+                Err(_) => self.restore(snap),
             }
             return r;
         }
@@ -231,23 +249,72 @@ impl Session {
         self.merge_key = None;
     }
 
-    fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
-        let snap = self.snapshot(label);
-        match f(self) {
-            Ok(v) => {
-                self.undo.push(snap);
-                if self.undo.len() > MAX_UNDO {
-                    self.undo.remove(0);
-                }
-                self.redo.clear();
-                self.changed();
-                Ok(v)
-            }
-            Err(e) => {
+    pub fn begin_group(&mut self, label: &str) {
+        if self.group.is_none() {
+            self.merge_key = None;
+            self.group = Some((self.snapshot(label), false));
+        }
+    }
+
+    pub fn end_group(&mut self) {
+        if let Some((snap, edited)) = self.group.take()
+            && edited
+        {
+            self.record_undo(snap);
+        }
+    }
+
+    pub fn group<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        if self.group.is_some() {
+            let snap = self.snapshot(label);
+            let edited = self.group.as_ref().is_some_and(|(_, edited)| *edited);
+            let result = f(self);
+            if result.is_err() {
                 self.restore(snap);
-                Err(e)
+                if let Some((_, flag)) = self.group.as_mut() {
+                    *flag = edited;
+                }
+            }
+            return result;
+        }
+        self.begin_group(label);
+        let r = f(self);
+        match r {
+            Ok(_) => self.end_group(),
+            Err(_) => {
+                if let Some((snap, _)) = self.group.take() {
+                    self.restore(snap);
+                }
             }
         }
+        r
+    }
+
+    fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        let snapshot = self.snapshot(label);
+        match f(self) {
+            Ok(value) => {
+                if let Some((_, edited)) = self.group.as_mut() {
+                    *edited = true;
+                } else {
+                    self.record_undo(snapshot);
+                }
+                self.changed();
+                Ok(value)
+            }
+            Err(error) => {
+                self.restore(snapshot);
+                Err(error)
+            }
+        }
+    }
+
+    fn record_undo(&mut self, snapshot: Snapshot) {
+        self.undo.push(snapshot);
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
     }
 
     fn restore(&mut self, s: Snapshot) {
@@ -256,7 +323,11 @@ impl Session {
         self.selection = s.selection;
         self.annotation_selection = s.annotation_selection;
         self.material_preview = s.material_preview;
-        self.clear_preview_results();
+        self.modified = s.modified;
+        self.dirty = s.dirty || self.cook_epoch != s.cook_epoch;
+        if self.cook_epoch != s.cook_epoch {
+            self.clear_preview_results();
+        }
     }
 
     /// Mark the document modified and in need of a cook.
@@ -279,6 +350,7 @@ impl Session {
     }
 
     pub fn undo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.undo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -290,6 +362,7 @@ impl Session {
     }
 
     pub fn redo(&mut self) -> Option<String> {
+        self.end_group();
         let s = self.redo.pop()?;
         let label = s.label.clone();
         let cur = self.snapshot(&label);
@@ -305,21 +378,23 @@ impl Session {
         self.undo.clear();
         self.redo.clear();
         self.merge_key = None;
+        self.group = None;
     }
 
     /// A decoder for the package's bitmap resources (memoized, shareable with worker threads).
     pub fn resource_decoder(&self) -> impl Fn(&str) -> Option<Image> + Sync + Send + 'static {
         let res: Vec<(String, ResourceBytes)> = self.pkg.resources.iter().map(|r| (r.name.clone(), r.bytes.clone())).collect();
         let memo = self.decoded.clone();
-        // Free images of resources that were deleted or replaced.
-        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|k, _| res.iter().any(|(_, b)| b.content_hash() == *k));
-        move |name: &str| {
+        // Release decoded images of deleted or replaced resources
+        memo.lock().unwrap_or_else(PoisonError::into_inner).retain(|(k, _), _| res.iter().any(|(_, b)| b.content_hash() == *k));
+        move |requested: &str| {
+            let (name, linear) = materialcraft_image::split_resource_key(requested);
             let (_, bytes) = res.iter().find(|(n, _)| n == name)?;
-            let key = bytes.content_hash();
+            let key = (bytes.content_hash(), linear);
             if let Some(i) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
                 return Some(i.clone());
             }
-            let img = materialcraft_formats::decode(bytes.as_slice()).ok()?;
+            let img = materialcraft_formats::decode(bytes.as_slice(), linear).ok()?;
             memo.lock().unwrap_or_else(PoisonError::into_inner).insert(key, img.clone());
             Some(img)
         }
@@ -338,6 +413,7 @@ impl Session {
         let cooked = crate::PreviewCook::run(&self.pkg, self.graph, &self.material_preview.graphs(), &opts, &self.cache);
         self.accept_preview(cooked);
         self.dirty = false;
+        self.cook_epoch = self.cook_epoch.wrapping_add(1);
         &self.cooked
     }
 
@@ -420,3 +496,7 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session.test.rs"]
+mod tests;

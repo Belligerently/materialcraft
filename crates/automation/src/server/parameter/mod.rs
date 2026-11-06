@@ -31,3 +31,6 @@ pub use render_params::RenderParams;
 pub use run_params::RunParams;
 pub use save_params::SaveParams;
 pub use screenshot_params::ScreenshotParams;
+
+mod material_export_params;
+pub use material_export_params::MaterialExportParams;

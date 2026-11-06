@@ -46,3 +46,37 @@ pub(super) fn frame(app: &mut MaterialCraftApp, view: Rect, only_selection: bool
     }
     app.ui.graph_camera = super::GraphCamera::fit(view, r).state();
 }
+
+/// Import the resource and its graph node in one atomic undo entry
+fn import_bitmap(app: &mut MaterialCraftApp, import: impl FnOnce(&mut materialcraft_engine::Session) -> materialcraft_engine::Result<String>) {
+    let center = view_center(app);
+    let snap = app.ui.prefs.snap_to_grid;
+    let result = app.session.group("Import bitmap", |session| {
+        let resource = import(session)?;
+        materialcraft_engine::execute(
+            session,
+            "graph.node.add",
+            &json!({
+                "def": "bitmap", "at": [center.x - NODE_W * 0.5, center.y - 60.0],
+                "snapToGrid": snap, "params": {"resource": resource}
+            }),
+        )?;
+        Ok(resource)
+    });
+    match result {
+        Ok(resource) => app.toast(format!("{} {resource}", crate::i18n::tr("Imported")), false),
+        Err(error) => app.toast(error.to_string(), true),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn import_bitmap_file(app: &mut MaterialCraftApp, path: &str) {
+    import_bitmap(app, |session| {
+        let result = materialcraft_engine::execute(session, "file.importBitmap", &json!({"path": path}))?;
+        Ok(result["name"].as_str().unwrap_or_default().to_string())
+    });
+}
+
+pub fn import_bitmap_bytes(app: &mut MaterialCraftApp, name: &str, bytes: Vec<u8>) {
+    import_bitmap(app, |session| materialcraft_engine::file_cmds::add_resource(session, name, bytes, None));
+}

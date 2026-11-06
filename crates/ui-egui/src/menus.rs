@@ -150,9 +150,8 @@ pub fn invoke(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) {
         "ui.preferences" => app.ui.windows.preferences = true,
         "ui.view.graph" => {}
         "ui.resetLayout" => app.ui.dock = crate::docking::Dock::default(),
-        "ui.closeAll" => {
-            app.run("file.newPackage", Value::Null);
-        }
+        // These replace the open package: ask first when it has unsaved changes.
+        "ui.closeAll" | "file.newPackage" => crate::unsaved::guard(app, crate::unsaved::Guarded::Menu { id: id.to_string() }),
         "ui.reloadResources" | "ui.clearCache" => {
             if let Ok(mut c) = app.session.cache.lock() {
                 c.clear();

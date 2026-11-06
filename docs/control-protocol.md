@@ -1,11 +1,12 @@
 # Control protocol and MCP
 
-> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-02 · **Change:** minor (portable materials for TextureCraft) · **Target:** the professional node-based material workflow
+> **Last reviewed:** 2026-11-02 · **Last updated:** 2026-11-03 · **Change:** minor (`material_export` MCP tool) · **Target:** the professional node-based material workflow
 
 Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 
 1. **MCP** (`materialcraft-cli mcp`): headless (an in-process session, files only below
-   `--read-root` / `--write-root`) or bridged to the running app (`--bridge <port>`).
+   `--read-root` / `--write-root`, also spelled `--automation-read-root` /
+   `--automation-write-root` as in the other crafting apps; `serve` takes them too) or bridged to the running app (`--bridge <port>`).
 2. **JSON lines** (`materialcraft-cli serve`): the same methods on stdio, or on `127.0.0.1:<port>`
    behind a token.
 3. **The app's control channel** (`materialcraft --control <port>`): one JSON request per line,
@@ -34,10 +35,11 @@ Agents drive MaterialCraft three ways, all dispatching the same engine commands:
 | `package.open {path}` / `package.save {path?}` | headless | workspace-scoped package I/O |
 | `bitmap.import {path, name?}` | headless | embed an image as a resource |
 | `outputs.export {dir, format?, pattern?, depth?, size?, graph?}` | headless | cook at full size and write every output |
+| `material.export {path, graph?, size?, values?}` | headless | write a portable `.mcmat` below the write root |
 | `render {view?, width?, height?, yaw?, pitch?, scene?, node?, port?, full?, tiling?, hq?, displacement?}` | headless | PNG (base64) of the 3D view or of one node; `hq` is the beauty render (displaced mesh, ray-traced AO, shadowed key light, 3×3 supersampling), `displacement` its depth in scene radii |
 | `ui.inspect` | app | UI state, the graph view rectangle, every node's screen rectangle, every port's identifier, display label and screen position, fps, toasts |
 | `ui.menu.list` / `ui.menu.invoke {id}` | app | the menu catalog; behave like a click |
-| `ui.set {...}` | app | merge fields into the UI state |
+| `ui.set {...}` | app | recursively merge fields into the UI state |
 | `ui.input {events}` | app | synthetic input, below |
 | `view.screenshot {view?: "3d"\|"2d"}` | app | PNG of the 3D or 2D view |
 | `ui.screenshot` | app | PNG of the whole window |
@@ -80,7 +82,7 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 | `graph.node.function` | `{id?, param, function}` drives a parameter by a function graph of the graph's inputs (dynamic parameter); `{id?, param, remove: true}` removes it |
 | `graph.preset.save` / `.apply` / `.delete` | `{name}`: store, restore or remove the current input values |
 | `graph.createFromSelection` | `{name?, ids?}`: move nodes into a sub-graph and replace them with an instance |
-| `view.2d` / `view.3d` | which node the 2D view shows, channel, tiling, histogram; scene, environment, camera, tiling, parallax depth, `transparency` (see through where the alpha is below one: the opacity output, else the base color's alpha), `alphaView` (show the alpha channel) |
+| `view.2d` / `view.3d` | which node the 2D view shows, channel, tiling, histogram; scene, environment, camera, tiling, `heightScale` (how far the height output raises the mesh, in mesh radii) and `heightLevel` (the height that stays on the surface; 0 = the relief rises out of it), `normalYFlip` (interpret DirectX normal maps; default false/OpenGL), `transparency` (see through where the alpha is below one: the opacity output, else the base color's alpha), `alphaView` (show the alpha channel) |
 | `view.3d.loadMesh` | `{path}` shows an OBJ, glTF or GLB mesh (scene `custom`) |
 | `library.list` | `{filter?, category?}`: every node with ports and parameters |
 
@@ -198,7 +200,7 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 |---|---|
 | `file.exportMaterial` | `{path, graph?, size? (px), values? {input: value}, inputs? {identifier: image path}}`: cook and write a `.mcmat`. TextureCraft runs `materialcraft-cli run source.sbs file.exportMaterial {...}` to re-cook at its texture set's resolution with its own values and baked mesh maps |
 | `file.sendToTextureCraft` | `{graph?}`: export into TextureCraft's library folder (`Documents/TextureCraft/library`), where its shelf lists it |
-| `graph.input.bind` / `graph.input.unbind` | `{identifier, resource? \| path?}` / `{identifier}`: a preview image for an input node (a mesh map exported from TextureCraft), saved in the package |
+| `graph.input.bind` / `graph.input.unbind` | `{identifier, resource? \| path?, linear?}` / `{identifier}`: a preview image for an input node (a mesh map exported from TextureCraft), saved in the package |
 | `file.open` | opens native `.sbs` packages, and a `.mcmat`'s source package, on its graph, with no file name. Returns `warnings`: what an SBS file holds that MaterialCraft can't read yet (missing nodes are kept as placeholders); also in `session.inspect` as `package.warnings` |
 | `file.save` | `{path?}`: native SBS; `.sbs` is appended when the path does not end in `.sbs` |
 
@@ -206,10 +208,23 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
 
 `session_inspect`, `command_list`, `command_run`, `command_batch`, `library_list`, `graph_new`,
 `node_add`, `node_connect`, `node_param`, `package_open`, `package_save`, `bitmap_import`,
-`outputs_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
+`outputs_export`, `material_export`, `view_render` (headless) and, bridged to the app, `view_screenshot`,
 `ui_screenshot`, `ui_inspect`, `ui_menu_invoke`, `ui_input`. `package_open` opens `.mcmat` files
-too; exporting one is CLI-only for now (the workspace sandbox refuses `file.*` commands).
+too, and `material_export` `{path, graph?, size?, values?}` writes one below `--write-root` (`path` is
+relative, the parent folder must exist, `values` are exposed input values). The workspace sandbox
+still refuses `file.*` commands, so a sandboxed agent exports through the tool, not `file.exportMaterial`;
+mesh-map `inputs` stay a CLI feature.
 
 While an FX-Map subgraph is open, `ui.inspect.subgraph` identifies its owner and selection. Canvas
 node IDs and ports refer to that embedded graph. `ui.menu.invoke` with `ui.graph.parent` returns
 to the parent canvas.
+
+Automation command requests each form a separate undo step. Embedded graph edits may explicitly
+pass `merge: true` to continue one gesture; an ordinary request ends that merge. UI slider gestures
+still coalesce until release. `material_export` uses the headless write-root capability and does not
+expose unrestricted engine file paths.
+
+Bitmap Color space selects sRGB or Linear. `graph.input.bind` accepts `linear: true` for normal,
+height and other data maps. Input preview bindings persist in native SBS graph options with the
+`materialcraft.previewImage.` and `materialcraft.previewLinear.` prefixes; these options describe
+MaterialCraft editor previews and do not establish external application interoperability.

@@ -1,4 +1,4 @@
-use super::sbs_value::{constant_xml, sbs_constant, to_natural_value};
+use super::sbs_value::{constant_xml, sbs_constant, sbs_constant_element, to_natural_value};
 use super::sbs_writer::SbsWriter;
 use super::xml::{child_element, child_value, children_named, parse_floats, xml_escape};
 use materialcraft_core::{FunctionGraph, FunctionNode, Value};
@@ -35,8 +35,7 @@ pub(super) fn read(element: XmlNode<'_, '_>) -> Result<FunctionGraph, String> {
             .into_iter()
             .flat_map(|data| children_named(data, "funcData"))
             .find(|data| child_value(*data, "name") == Some(op))
-            .and_then(|data| child_element(data, "constantValue"))
-            .and_then(sbs_constant)
+            .and_then(|data| data.children().filter(|child| child.is_element()).find_map(|child| sbs_constant_element(child).or_else(|| sbs_constant(child))))
             .map(|value| to_natural_value(&value));
         let position = child_element(element, "GUILayout").and_then(|layout| child_value(layout, "gpos")).map(parse_floats).unwrap_or_default();
         graph.nodes.push(FunctionNode {

@@ -64,5 +64,10 @@ pub fn resolve_params(def: &NodeDefinition, overrides: &BTreeMap<String, Value>)
             m.insert(k.clone(), v.clone());
         }
     }
+    clamp_params(def, &mut m);
     m
 }
+
+#[cfg(test)]
+#[path = "parameter.test.rs"]
+mod tests;

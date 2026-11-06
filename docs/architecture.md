@@ -21,7 +21,7 @@ L2  formats   native .sbs packages, .mcmat portable materials, bitmap/SVG decode
               texture encode (PNG/JPEG/TGA/TIFF/BMP/WEBP/EXR/HDR), atomic writes
 L3  engine    Session (package, open graph, selection, 2D/3D view state, snapshot undo, cache),
               the command registry, inspect, sample materials and graph templates
-L3  render    the 3D view: BVH ray casts, parallax occlusion from the height output, GGX PBR with
+L3  render    the 3D view: BVH ray casts, the height output displacing a subdivided mesh, GGX PBR with
               prefiltered IBL + SH diffuse, alpha transparency (layered ray compositing) and an
               alpha channel view, ACES tone mapping; procedural environments
 L4  automation MCP server (rmcp), JSON-lines RPC (stdio/TCP with token), bridge client, workspace sandbox
@@ -53,6 +53,14 @@ Sizes: generators take the graph ("parent") size; filters take their main input'
 offset by powers of two or set absolutely. While editing, outputs are capped at the preview size
 (512 px by default), with pixel-based parameters scaled by `w / 256` so previews and full-size
 exports look the same. Exports cook at full size through the same cache.
+
+The 2D toolbar and the 3D view's Display menu expose the shared preview limit (256, 512, 1024,
+2048 or 4096 px, or Full size). This is a cap, so a 4K preview requires a graph/node configured
+for 4096 px or larger. Both controls run `view.previewSize` and persist the choice in preferences;
+control-channel calls to the same command also retain their size across UI frames. The 3D view
+uses those cooked maps, while its rendered frame follows the panel's physical pixel dimensions.
+If the device supports smaller textures than the cooked image, the 2D view reduces only the
+uploaded texture to that limit; source pixels, readout and screenshots retain the cooked size.
 
 The desktop UI cooks on a worker thread (`ui-egui/src/cook.rs`) from a snapshot of the package and
 keeps drawing the last results; the browser cooks on the UI thread.
@@ -166,3 +174,8 @@ TextureCraft paints with it and re-cooks it by running `materialcraft-cli run <p
 file.exportMaterial {path, size, values, inputs}`: the apps share the file format and the command
 line, never code. Graphs keep preview images for their input nodes (`Graph::input_images`, mesh
 maps from TextureCraft); `eval::cook` feeds them to the top-level graph, and a caller's images win.
+
+Preview cooks publish the editor graph and assigned material graphs together. A synchronous cook
+invalidates older worker results. Displacement uses the assigned Height source even while another
+graph or an embedded function is open. Native image loading checks dimensions before decoding;
+bitmap resources and graph input previews can request linear data-map reads.

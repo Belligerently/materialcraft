@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,8 @@ pub struct Graph {
     pub presets: Vec<Preset>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_images: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub input_images_linear: BTreeSet<String>,
     #[serde(default)]
     pub attributes: Attributes,
     /// The id the next node, frame, comment or pin gets
@@ -63,6 +65,7 @@ impl Graph {
             inputs: BTreeMap::new(),
             presets: Vec::new(),
             input_images: BTreeMap::new(),
+            input_images_linear: BTreeSet::new(),
             attributes: Attributes::default(),
             next_id: 1,
         }

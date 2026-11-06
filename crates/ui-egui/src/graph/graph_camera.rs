@@ -32,7 +32,7 @@ impl GraphCamera {
     }
 
     pub(crate) fn zoom_from_input(&mut self, ui: &Ui, view: Rect) {
-        self.zoom = self.zoom.clamp(0.08, 4.0);
+        self.zoom = self.zoom.clamp(crate::state::GraphCamera::ZOOM.0, crate::state::GraphCamera::ZOOM.1);
         if !ui.rect_contains_pointer(view) {
             return;
         }
@@ -42,7 +42,7 @@ impl GraphCamera {
         let scroll = ui.input(|input| input.smooth_scroll_delta.y + input.zoom_delta().ln() * 200.0);
         if scroll.is_finite() && scroll != 0.0 {
             let before = self.to_graph(pointer);
-            self.zoom = (self.zoom * (scroll * 0.0025).exp()).clamp(0.08, 4.0);
+            self.zoom = (self.zoom * (scroll * 0.0025).exp()).clamp(crate::state::GraphCamera::ZOOM.0, crate::state::GraphCamera::ZOOM.1);
             self.pan = before.to_vec2() - (pointer - self.origin) / self.zoom;
         }
     }

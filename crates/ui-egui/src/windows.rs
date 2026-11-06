@@ -27,7 +27,7 @@ const PREVIEW: u32 = 96;
 fn render_templates() -> crate::thumbs::Previews {
     let light = materialcraft_render::Lighting::new("studio");
     let scene = materialcraft_render::Scene::builtin("sphere");
-    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, height_scale: 0.0, ..Default::default() };
+    let settings = materialcraft_render::Settings { distance: 2.7, supersample: 2, ..Default::default() };
     materialcraft_engine::samples::TEMPLATES
         .iter()
         .filter_map(|(id, _)| {
@@ -95,6 +95,7 @@ pub fn show(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if app.ui.windows.home {
         home(app, ctx);
     }
+    crate::unsaved::show(app, ctx);
 }
 
 fn modal(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, size: egui::Vec2, body: impl FnOnce(&mut Ui)) {
@@ -282,17 +283,9 @@ fn preferences(app: &mut MaterialCraftApp, ctx: &egui::Context) {
         if crate::widgets::slider(ui, tr("Autosave every (minutes, 0 = off)"), &mut auto, 0.0..=60.0, 0).changed() {
             p.autosave_minutes = auto.round() as u32;
         }
-        crate::widgets::combo(
-            ui,
-            tr("Preview size while editing"),
-            if p.preview_size == 0 { tr("Full size").to_string() } else { format!("{} px", p.preview_size) },
-            |ui| {
-                for s in [256u32, 512, 1024, 2048, 0] {
-                    let label = if s == 0 { tr("Full size").to_string() } else { format!("{s} px") };
-                    ui.selectable_value(&mut p.preview_size, s, label);
-                }
-            },
-        );
+        crate::widgets::combo(ui, tr("Preview size while editing"), crate::preview_resolution::label(p.preview_size), |ui| {
+            crate::preview_resolution::choices(ui, &mut p.preview_size);
+        });
         ui.checkbox(&mut p.thumbnails, tr("Show node thumbnails"));
         crate::widgets::slider(ui, tr("3D pan limit (mesh radii)"), &mut p.camera.pan_limit, 0.0..=20.0, 1);
         crate::widgets::slider(ui, tr("3D pan speed"), &mut p.camera.pan_speed, 0.1..=4.0, 2);
@@ -574,14 +567,8 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
                 true
             }
             "file.importBitmap" => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Images", materialcraft_engine::formats::IMAGE_EXTENSIONS).pick_file()
-                    && let Some(r) = app.run("file.importBitmap", json!({"path": p.display().to_string()}))
-                {
-                    let name = r["name"].as_str().unwrap_or_default().to_string();
-                    crate::graph::add_node_near_selection(app, "bitmap");
-                    if let Some(id) = app.session.selection.last().copied() {
-                        app.run("graph.node.param", json!({"id": id.0, "param": "resource", "value": name}));
-                    }
+                if let Some(path) = rfd::FileDialog::new().add_filter("Images", materialcraft_engine::formats::IMAGE_EXTENSIONS).pick_file() {
+                    crate::graph::import_bitmap_file(app, &path.display().to_string());
                 }
                 true
             }
@@ -604,6 +591,11 @@ pub fn file_action(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) ->
 /// Open a package from a path (recent list, command line)
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
+    crate::unsaved::guard(app, crate::unsaved::Guarded::OpenPath { path: path.to_string() });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn open_path_now(app: &mut MaterialCraftApp, path: &str) {
     if app.run("file.open", json!({"path": path})).is_some() {
         app.ui.add_recent(path);
         app.ui.frame_all = true;
@@ -611,3 +603,7 @@ pub fn open_path(app: &mut MaterialCraftApp, path: &str) {
         after_open(app);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "windows.test.rs"]
+mod tests;

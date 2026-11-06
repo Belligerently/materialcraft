@@ -16,12 +16,14 @@ pub mod library;
 mod material_preview_menu;
 mod menu_item;
 pub mod menus;
+mod preview_resolution;
 #[path = "property/mod.rs"]
 pub mod properties;
 pub mod state;
 pub mod theme;
 pub mod thumbs;
 pub mod toolbar;
+pub mod unsaved;
 mod value_input_editor;
 pub mod view2d;
 pub mod view3d;

@@ -154,7 +154,9 @@ impl SbsWriter {
 
         write_canvas_items(out, graph, self);
         let [width, height] = graph.size.map(|s| s.clamp(MIN_SIZE_LOG2, MAX_SIZE_LOG2));
-        let _ = write!(out, "<options><option><name v=\"defaultParentSize\"/><value v=\"{width}x{height}\"/></option></options><root><rootOutputs>");
+        let _ = write!(out, "<options><option><name v=\"defaultParentSize\"/><value v=\"{width}x{height}\"/></option>");
+        super::preview_binding::write(out, graph);
+        out.push_str("</options><root><rootOutputs>");
         for uid in graph.nodes.iter().filter_map(|n| output_uids.get(&n.id)) {
             let _ = write!(out, "<rootOutput><output v=\"{uid}\"/><format v=\"0\"/><usertag v=\"\"/></rootOutput>");
         }

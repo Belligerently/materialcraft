@@ -16,6 +16,14 @@ use materialcraft_automation::security::{
 use materialcraft_ui_egui::ControlRequest;
 use serde_json::{Value, json};
 
+#[cfg(test)]
+#[path = "control_server.test.rs"]
+mod exact_token_tests;
+
+fn auth_ok(token: &str, method: &str, params: &Value) -> bool {
+    method == "auth" && params.get("token").and_then(Value::as_str).is_some_and(|t| token_matches(token, t))
+}
+
 /// How long an authenticated connection may stay idle.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -123,8 +131,7 @@ fn serve(stream: TcpStream, token: &str, tx: &Sender<ControlRequest>, ctx: &egui
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("").to_string();
         let params = msg.get("params").cloned().unwrap_or(json!({}));
         if deadline.is_some() {
-            let supplied = params.get("token").and_then(Value::as_str).unwrap_or_default();
-            if method != "auth" || !token_matches(token, supplied) {
+            if !auth_ok(token, &method, &params) {
                 // One attempt per connection, as on `materialcraft-cli serve`.
                 reply(&mut out, id, json!({"ok": false, "error": "authenticate first: {\"method\":\"auth\",\"params\":{\"token\":…}}"}));
                 return;

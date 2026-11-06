@@ -1,12 +1,37 @@
-use crate::{identifier, instance_graph};
+use crate::{Cache, identifier, instance_graph};
 use materialcraft_core::{Node, Package, Value};
 use materialcraft_image::Image;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
-pub(crate) fn image_key(i: &Image) -> u64 {
-    let step = (i.data.len() / 4096).max(1);
-    hash_of(&(i.w, i.h, i.data.iter().step_by(step).map(|v| v.to_bits()).collect::<Vec<u32>>()))
+pub(crate) fn image_key(i: &Image, cache: &Mutex<Cache>) -> u64 {
+    let ptr = Arc::as_ptr(&i.data) as usize;
+    let shape = (i.w, i.h, i.kind.channels());
+    if let Some(key) = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .input_hashes
+        .get(&ptr)
+        .and_then(|saved| saved.buffer.upgrade().filter(|data| Arc::ptr_eq(data, &i.data) && saved.shape == shape).map(|_| saved.key))
+    {
+        return key;
+    }
+    let mut h = DefaultHasher::new();
+    (shape, i.data.len()).hash(&mut h);
+    for value in i.data.iter() {
+        value.to_bits().hash(&mut h);
+    }
+    let key = h.finish();
+    let mut cache = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.input_hashes.len() >= 128 {
+        cache.input_hashes.retain(|_, saved| saved.buffer.strong_count() > 0);
+        if cache.input_hashes.len() >= 128 {
+            cache.input_hashes.clear();
+        }
+    }
+    cache.input_hashes.insert(ptr, crate::input_fingerprint::InputFingerprint { buffer: Arc::downgrade(&i.data), shape, key });
+    key
 }
 
 pub(crate) fn hash_of(v: &impl Hash) -> u64 {

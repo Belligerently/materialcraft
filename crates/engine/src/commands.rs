@@ -164,3 +164,16 @@ pub(crate) fn point(p: &J, key: &str) -> Option<[f32; 2]> {
     let y = a.get(1)?.as_f64()? as f32;
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
+
+/// Automation requests are separate undo steps unless the caller explicitly groups a gesture
+pub fn execute_request(session: &mut Session, id: &str, params: &J) -> Result<J> {
+    let merged = params.get("merge").and_then(J::as_bool) == Some(true);
+    if !merged {
+        session.finish_edit();
+    }
+    let result = execute(session, id, params);
+    if !merged {
+        session.finish_edit();
+    }
+    result
+}

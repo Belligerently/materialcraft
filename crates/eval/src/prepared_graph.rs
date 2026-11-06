@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 pub(crate) struct PreparedGraph<'a> {
     pub index: GraphIndex<'a>,
     pub order: Vec<NodeId>,
+    nominal_sizes: BTreeMap<NodeId, (u32, u32)>,
     ports: BTreeMap<NodeId, (Vec<Port>, Vec<Port>)>,
 }
 
@@ -22,7 +23,26 @@ impl<'a> PreparedGraph<'a> {
             })
             .collect();
 
-        Self { index, order, ports }
+        let mut prepared = Self { index, order, ports, nominal_sizes: BTreeMap::new() };
+        for &id in &prepared.order {
+            let Some(node) = prepared.index.node(id) else { continue };
+
+            let input = prepared.first_input_size(id);
+            let nominal = if node.disabled {
+                input.unwrap_or_else(|| crate::node_size(graph, materialcraft_nodes::find(&node.def), node, None, None))
+            } else {
+                crate::node_size(graph, materialcraft_nodes::find(&node.def), node, input, None)
+            };
+            prepared.nominal_sizes.insert(id, nominal);
+        }
+        prepared
+    }
+
+    pub fn first_input_size(&self, id: NodeId) -> Option<(u32, u32)> {
+        self.ports(id).0.iter().filter(|port| port.kind != materialcraft_nodes::PortKind::Value).find_map(|port| {
+            let connection = self.index.input_of(id, &port.id)?;
+            self.nominal_sizes.get(&connection.from).copied()
+        })
     }
 
     pub fn ports(&self, id: NodeId) -> (&[Port], &[Port]) {

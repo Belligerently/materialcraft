@@ -86,7 +86,7 @@ fn package_save_and_open_round_trip() {
     let small = dir.join("small");
     run(&mut s, "file.export", json!({"dir": small.to_str().unwrap(), "format": "png", "depth": 8, "size": 64}));
     let file = std::fs::read_dir(&small).unwrap().next().unwrap().unwrap().path();
-    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap()).unwrap();
+    let img = materialcraft_formats::decode(&std::fs::read(file).unwrap(), false).unwrap();
     assert_eq!((img.w, img.h), (64, 64));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -99,7 +99,7 @@ fn export_size_keeps_proportions_and_clamps() {
     let dims = |s: &Session, size: Value| {
         let (gi, ext, pattern, depth, size) = materialcraft_engine::file_cmds::export_params(s, &json!({"size": size})).unwrap();
         let files = materialcraft_engine::file_cmds::export_outputs(s, gi, &ext, &pattern, depth, size).unwrap();
-        files.iter().map(|f| materialcraft_formats::decode(&f.bytes).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
+        files.iter().map(|f| materialcraft_formats::decode(&f.bytes, false).unwrap()).map(|i| (i.w, i.h)).collect::<Vec<_>>()
     };
 
     for size in [json!(0), json!(null)] {
@@ -315,6 +315,24 @@ fn view3d_target_is_validated_clamped_and_reset() {
     }
     run(&mut s, "view.3d.reset", json!({}));
     assert_eq!(s.view3d.target, [0.0; 3]);
+}
+
+/// The height output rises out of the mesh by default; depth and level are clamped and reset with the scene.
+#[test]
+fn view3d_height_depth_and_level_are_clamped_and_reset() {
+    let mut s = sample_session();
+    assert_eq!(s.view3d.height_level, 0.0, "the relief rises out of the surface by default");
+    assert!(s.view3d.height_scale > 0.0);
+
+    let view = run(&mut s, "view.3d", json!({"heightScale": 0.1, "heightLevel": 0.5}));
+    assert_eq!((view["heightScale"].as_f64(), view["heightLevel"].as_f64()), (Some(0.1f32 as f64), Some(0.5)));
+    run(&mut s, "view.3d", json!({"heightScale": 9.0, "heightLevel": -3.0}));
+    assert_eq!((s.view3d.height_scale, s.view3d.height_level), (0.5, 0.0));
+    run(&mut s, "view.3d", json!({"heightLevel": 7.0}));
+    assert_eq!(s.view3d.height_level, 1.0);
+
+    run(&mut s, "view.3d.reset", json!({}));
+    assert_eq!(s.view3d.height_level, 0.0);
 }
 
 #[test]

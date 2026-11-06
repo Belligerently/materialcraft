@@ -7,6 +7,7 @@ mod cooked;
 mod graph_execution;
 mod graph_instance;
 mod graph_output;
+mod input_fingerprint;
 mod node_execution;
 mod node_output;
 mod node_result;

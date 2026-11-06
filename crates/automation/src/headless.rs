@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use materialcraft_engine::core::NodeId;
-use materialcraft_engine::{Session, commands, file_cmds, inspect};
-use materialcraft_render::{Lighting, Maps, Scene, Settings};
+use materialcraft_engine::formats::material::MATERIAL_EXT;
+use materialcraft_engine::{Session, commands, file_cmds, inspect, material_cmds};
+use materialcraft_render::{Lighting, Maps, Relief, Scene, Settings, VIEW_TRIANGLES};
 use serde_json::{Value, json};
 
 use crate::budgets::{HQ_TRIANGLES, MAX_LOCAL_RENDER_SIDE, MAX_PNG_SIDE, check_png, encode_png};
@@ -83,7 +84,7 @@ impl Headless {
         if !self.trusted() {
             authorize_command(id, &params)?;
         }
-        Ok(materialcraft_engine::execute(&mut self.session, id, &params)?)
+        Ok(materialcraft_engine::commands::execute_request(&mut self.session, id, &params)?)
     }
 
     /// Run `[{id, params?}]` in order, stopping at the first error (reported with its index)
@@ -155,7 +156,25 @@ impl Headless {
         Ok(json!({"files": written}))
     }
 
-    /// Render the 3D view or a node's 2D output as PNG
+    /// Export a portable material below the granted write root
+    pub fn export_material(&mut self, p: &Value) -> Result<Value, AutomationError> {
+        let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("`path` is required"))?;
+        let path = if path.to_ascii_lowercase().ends_with(&format!(".{MATERIAL_EXT}")) { path.to_string() } else { format!("{path}.{MATERIAL_EXT}") };
+        match &self.fs {
+            Filesystem::Denied => return Err(bad("file access is not granted: start the server with --write-root <dir>")),
+            Filesystem::Workspace(w) => w.check_write(&path)?,
+            Filesystem::TrustedLocal => {}
+        }
+        let (gi, options) = material_cmds::material_request(&self.session, "material.export", p)?;
+        let bytes = material_cmds::material_bytes(&self.session, gi, &options)?;
+        if bytes.len() as u64 > MAX_READ_BYTES {
+            return Err(bad(format!("the material is {} bytes (limit {MAX_READ_BYTES}); export a smaller `size`", bytes.len())));
+        }
+        self.write(&path, &bytes)?;
+        Ok(json!({"path": path, "bytes": bytes.len()}))
+    }
+
+    /// Render the assigned material or a node output as PNG
     pub fn render_png(&mut self, o: &RenderOptions) -> Result<Rendered, AutomationError> {
         let max = if self.trusted() { MAX_LOCAL_RENDER_SIDE } else { MAX_PNG_SIDE };
         let saved = self.session.preview_size;
@@ -208,6 +227,8 @@ impl Headless {
             self.light = Some(Lighting::new(&v.environment));
         }
         let tiling = o.tiling.unwrap_or(v.tiling).clamp(0.1, 64.0);
+        let depth = if o.hq { o.displacement.unwrap_or(v.height_scale) } else { v.height_scale };
+        let relief = Relief { depth: depth.clamp(0.0, 0.5), level: v.height_level };
         let mut settings = Settings {
             yaw: o.yaw.unwrap_or(v.yaw),
             pitch: o.pitch.unwrap_or(v.pitch),
@@ -216,7 +237,7 @@ impl Headless {
             tiling,
             exposure: v.exposure,
             env_rotation: v.env_rotation,
-            height_scale: v.height_scale,
+            normal_y_flip: v.normal_y_flip,
             show_env: false,
             supersample: 2,
             transparency: v.transparency,
@@ -227,14 +248,7 @@ impl Headless {
         let (w, h) = (o.width.unwrap_or(1024).clamp(16, max), o.height.unwrap_or(768).clamp(16, max));
         let maps = Maps::from_usages(self.session.material_maps());
         let (Some((_, scene)), Some(light)) = (&self.scene, &self.light) else { return (w, h, vec![0; (w * h * 4) as usize]) };
-        let displaced = match (o.hq, &maps.height) {
-            (true, Some(height)) => {
-                settings.height_scale = 0.0;
-                Some(Scene::displaced(&scene.mesh, height, tiling, o.displacement.unwrap_or(0.04).clamp(0.0, 0.5) * scene.radius, HQ_TRIANGLES))
-            }
-            _ => None,
-        };
-
+        let displaced = scene.with_relief(&maps, relief, tiling, if o.hq { HQ_TRIANGLES } else { VIEW_TRIANGLES });
         if o.hq {
             settings.supersample = 3;
             settings.ao_rays = 8;
@@ -251,3 +265,7 @@ pub fn batch_reply(results: Vec<Value>, failed: Option<(usize, &str, String)>) -
         "failed": failed.map(|(index, id, error)| json!({ "index": index, "id": id, "error": error })),
     })
 }
+
+#[cfg(test)]
+#[path = "headless.test.rs"]
+mod tests;

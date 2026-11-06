@@ -10,4 +10,6 @@ pub struct Windows {
     pub preferences: bool,
     pub shortcuts: bool,
     pub home: bool,
+    #[serde(skip_deserializing)]
+    pub unsaved: Option<crate::unsaved::Guarded>,
 }

@@ -19,32 +19,23 @@ fn distance(context: &CookContext) -> CookResult {
     let mask = context.gray_or(0, 0.0);
     let maxd = (context.f("distance").max(0.0) * context.w as f32 / 256.0).max(1e-3);
     let data = mask.data.clone();
-    let d2 = ops::distance_sq(context.w, context.h, |i| data.get(i).copied().unwrap_or(0.0) > 0.5, context.tile);
+    let inside = |i| data.get(i).copied().unwrap_or(0.0) > 0.5;
     let Some(src) = context.sized(1) else {
+        let d2 = ops::distance_sq(context.w, context.h, inside, context.tile);
         return Ok(vec![ops::gray_from(context.w, context.h, d2.iter().map(|d| (1.0 - d.sqrt() / maxd).clamp(0.0, 1.0)).collect())]);
     };
-    // Spread the source's colors: each pixel takes the color of the nearest mask pixel, found by walking down the distance field's gradient
-    let dist: Vec<f32> = d2.iter().map(|d| d.sqrt()).collect();
+    // Propagate the exact nearest site without gaps from gradient-walk stalls
+    let (d2, sites) = ops::distance_sq_with_sites(context.w, context.h, inside, context.tile);
     let combine = context.b("combine");
-    let (w, h) = (context.w as i64, context.h as i64);
-    let field = ops::gray_from(context.w, context.h, dist);
     Ok(vec![Image::generate(context.w, context.h, src.kind, |x, y| {
-        let (mut px, mut py) = (x as f32, y as f32);
-        for _ in 0..64 {
-            let d = field.get_gray(px.round() as i64, py.round() as i64, context.tile);
-            if d < 0.5 {
-                break;
-            }
-            let (gx, gy) = ops::slope(&field, px.round() as i64, py.round() as i64, context.tile);
-            let g = (gx * gx + gy * gy).sqrt().max(1e-4);
-            px -= gx / g * d.min(8.0);
-            py -= gy / g * d.min(8.0);
-            if !context.tile && (px < 0.0 || py < 0.0 || px >= w as f32 || py >= h as f32) {
-                break;
-            }
-        }
-        let mut c = src.get(px.round() as i64, py.round() as i64, context.tile);
-        let d = field.get_gray(x as i64, y as i64, context.tile);
+        let i = y as usize * context.w as usize + x as usize;
+        let site = sites.get(i).copied().unwrap_or(usize::MAX);
+        let mut c = if site == usize::MAX {
+            [0.0, 0.0, 0.0, if src.is_gray() { 1.0 } else { 0.0 }]
+        } else {
+            src.get((site % context.w as usize) as i64, (site / context.w as usize) as i64, false)
+        };
+        let d = d2.get(i).copied().unwrap_or(f32::INFINITY).sqrt();
         if d > maxd {
             c = [0.0, 0.0, 0.0, if src.is_gray() { 1.0 } else { 0.0 }];
         } else if combine {

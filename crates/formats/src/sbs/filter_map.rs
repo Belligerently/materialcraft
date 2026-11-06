@@ -55,7 +55,7 @@ pub(super) const FILTERS: &[FilterMap] = &[
         params: &[("alphamult", "flatten_alpha"), ("mattelevel", "matte")],
     },
     FilterMap { sbs: "hsl", def: "hsl", inputs: &[("input1", "input")], params: &[("hue", "hue"), ("saturation", "saturation"), ("luminance", "lightness")] },
-    FilterMap { sbs: "bitmap", def: "bitmap", inputs: &[], params: &[("colorswitch", "color_mode")] },
+    FilterMap { sbs: "bitmap", def: "bitmap", inputs: &[], params: &[("colorswitch", "color_mode"), ("colorspace", "colour_space")] },
     FilterMap {
         sbs: "levels",
         def: "levels",
@@ -108,13 +108,8 @@ pub(super) const FILTERS: &[FilterMap] = &[
     },
 ];
 pub(super) const BASE_PARAMS: &[&str] = &["outputsize", "format", "randomseed", "tiling", "pixelsize", "pixelratio", "quality"];
-pub(super) const HANDLED_PARAMS: &[(&str, &str)] = &[
-    ("bitmap", "bitmapresourcepath"),
-    ("bitmap", "colorspace"),
-    ("grayscaleconversion", "channelsweights"),
-    ("transformation", "matrix22"),
-    ("curve", "exposecurve"),
-];
+pub(super) const HANDLED_PARAMS: &[(&str, &str)] =
+    &[("bitmap", "bitmapresourcepath"), ("grayscaleconversion", "channelsweights"), ("transformation", "matrix22"), ("curve", "exposecurve")];
 
 pub(super) fn filter_by_sbs_name(name: &str) -> Option<&'static FilterMap> {
     FILTERS.iter().find(|f| f.sbs == name)

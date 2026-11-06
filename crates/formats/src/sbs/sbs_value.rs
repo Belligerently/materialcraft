@@ -46,7 +46,10 @@ impl SbsValue {
     }
 }
 pub(super) fn sbs_constant(holder: XmlNode) -> Option<SbsValue> {
-    let element = holder.children().find(|c| c.is_element())?;
+    sbs_constant_element(holder.children().find(|child| child.is_element())?)
+}
+
+pub(super) fn sbs_constant_element(element: XmlNode) -> Option<SbsValue> {
     let text = element.attribute("v").unwrap_or("");
     let tag = element.tag_name().name();
 

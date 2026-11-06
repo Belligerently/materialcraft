@@ -73,7 +73,7 @@ pub(crate) fn cook_node(
         incoming.push(output);
     }
     let vars = &variables;
-    let first = inputs.iter().flatten().next().map(|i| (i.w, i.h));
+    let first = prepared.first_input_size(node.id);
     let (w, h) = node_size(graph, def, node, first, opts.max_size);
     let fail = |msg: String, key: u64| NodeResult {
         outputs: Arc::new(vec![NodeOutput::Image(error_image(w, h)); out_ports.len().max(1)]),
@@ -110,7 +110,7 @@ pub(crate) fn cook_node(
         &input_keys,
         res_hash,
         sub_hash,
-        input_img.map(image_key),
+        input_img.map(|image| image_key(image, cache)),
         variable_key(node, &params, vars),
     ));
     if let Some(v) = lock(cache).get(key) {

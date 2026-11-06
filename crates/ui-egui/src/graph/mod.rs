@@ -56,3 +56,7 @@ pub(crate) mod editor_target;
 pub(crate) mod gesture;
 
 pub(crate) mod canvas_geometry;
+
+pub use navigation::import_bitmap_bytes;
+#[cfg(not(target_arch = "wasm32"))]
+pub use navigation::import_bitmap_file;

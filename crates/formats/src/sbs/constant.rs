@@ -18,3 +18,5 @@ pub(super) const SNIFF_BYTES: usize = 4096;
 pub(super) const SELF_DEPENDENCY: &str = "?himself";
 pub(super) const FIRST_UID: u64 = 1_000_000_000;
 pub(super) const NODE_HALF_SIZE: [f32; 2] = [50.0, 40.0];
+
+pub(super) const MAX_PACKAGE_BYTES: usize = 1 << 30;

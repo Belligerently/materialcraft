@@ -7,6 +7,7 @@ pub(super) fn definition() -> NodeDefinition {
         .atomic()
         .generator()
         .resource("resource", "Bitmap resource")
+        .choice("colour_space", "Color space", &["sRGB", "Linear"], 0)
         .boolean("color_mode", "Color output", true)
         .any_out()
         .cook(bitmap)
@@ -14,7 +15,7 @@ pub(super) fn definition() -> NodeDefinition {
 
 fn bitmap(context: &CookContext) -> CookResult {
     let name = context.text("resource");
-    let image = match (context.resource)(name) {
+    let image = match (context.resource)(&materialcraft_image::resource_key(name, context.i("colour_space") == 1)) {
         Some(image) => image.resize(context.w, context.h, context.tile),
         None if name.is_empty() => context.gen_color(|u, v| {
             let c = if ((u * 8.0) as i32 + (v * 8.0) as i32) % 2 == 0 { 0.8 } else { 0.2 };

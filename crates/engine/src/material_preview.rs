@@ -80,13 +80,19 @@ impl Session {
         self.material_preview.sources(&self.pkg).into_iter().filter_map(|(channel, source)| Some((channel.id(), self.material_image(&source)?))).collect()
     }
 
+    /// A source's identity, selected port and cooked content
+    pub fn material_source_key(&self, source: &MaterialSource) -> u64 {
+        let result = self.preview_cooked(source.graph).and_then(|cooked| cooked.nodes.get(&source.node));
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        (source, source.port_index(&self.pkg), result.map(|result| result.key)).hash(&mut hash);
+        hash.finish()
+    }
+
     /// Assignment and cooked content both invalidate the rendered preview
     pub fn material_key(&self) -> u64 {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         for (channel, source) in self.material_preview.sources(&self.pkg) {
-            let result = self.preview_cooked(source.graph).and_then(|cooked| cooked.nodes.get(&source.node));
-            let port = source.port_index(&self.pkg);
-            (channel, &source, port, result.map(|result| result.key)).hash(&mut hash);
+            (channel, self.material_source_key(&source)).hash(&mut hash);
         }
         hash.finish()
     }

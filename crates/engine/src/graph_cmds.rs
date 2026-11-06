@@ -110,6 +110,9 @@ fn delete(s: &mut Session, p: &J) -> Result<J> {
     let i = graph_index(s, p)?;
     s.edit("Delete graph", |s| {
         s.pkg.graphs.remove(i);
+        if i < s.graph {
+            s.graph -= 1;
+        }
         s.material_preview.remove_graph(i);
         s.clear_preview_results();
         s.clipboard = None;
@@ -362,6 +365,7 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
         let src = s.graph()?.clone();
         let mut sub = materialcraft_core::Graph::new(&name);
         sub.size = src.size;
+        sub.seed = src.seed;
         sub.next_id = src.next_id;
         sub.nodes = src.nodes.iter().filter(|n| ids.contains(&n.id)).cloned().collect();
         sub.connections = src.connections.iter().filter(|c| ids.contains(&c.from) && ids.contains(&c.to)).cloned().collect();
@@ -406,3 +410,7 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
         Ok(json!({"graph": name, "instance": inst.0}))
     })
 }
+
+#[cfg(test)]
+#[path = "graph_cmds.test.rs"]
+mod tests;

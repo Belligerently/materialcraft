@@ -8,6 +8,7 @@ pub struct Cache {
     bytes: usize,
     cap: usize,
     tick: u64,
+    pub(crate) input_hashes: HashMap<usize, crate::input_fingerprint::InputFingerprint>,
 }
 
 impl Default for Cache {
@@ -18,7 +19,7 @@ impl Default for Cache {
 
 impl Cache {
     pub fn new(cap_bytes: usize) -> Cache {
-        Cache { entries: HashMap::new(), bytes: 0, cap: cap_bytes, tick: 0 }
+        Cache { entries: HashMap::new(), bytes: 0, cap: cap_bytes, tick: 0, input_hashes: HashMap::new() }
     }
 
     pub fn bytes(&self) -> usize {
@@ -35,6 +36,7 @@ impl Cache {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.input_hashes.clear();
         self.bytes = 0;
     }
 

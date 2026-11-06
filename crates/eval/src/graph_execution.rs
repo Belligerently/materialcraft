@@ -15,8 +15,13 @@ pub fn cook(package: &Package, graph_index: usize, options: &Options, cache: &Mu
     // The top-level graph's input nodes show their preview images; the caller's images win
     let bound;
     let options = if options.depth == 0 && !graph.input_images.is_empty() {
-        let mut inputs: BTreeMap<String, Image> =
-            graph.input_images.iter().filter_map(|(id, resource)| Some((id.clone(), (options.resource)(resource)?))).collect();
+        let mut inputs: BTreeMap<String, Image> = graph
+            .input_images
+            .iter()
+            .filter_map(|(id, resource)| {
+                Some((id.clone(), (options.resource)(&materialcraft_image::resource_key(resource, graph.input_images_linear.contains(id)))?))
+            })
+            .collect();
         inputs.extend(options.inputs.iter().map(|(name, value)| (name.clone(), value.clone())));
         bound = Options { only: options.only.clone(), inputs, overrides: options.overrides.clone(), graph_stack: options.graph_stack.clone(), ..*options };
         &bound

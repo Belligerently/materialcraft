@@ -32,6 +32,8 @@ pub struct MaterialCraftApp {
     pub ui_ms: f32,
     /// The last status message (bottom left)
     pub status: String,
+    pub(crate) pending_load: Option<(String, Vec<u8>)>,
+    pub(crate) quit_confirmed: bool,
     last_time: f64,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     next_autosave: f64,
@@ -77,6 +79,8 @@ impl MaterialCraftApp {
             fps: 0.0,
             ui_ms: 0.0,
             status: String::new(),
+            pending_load: None,
+            quit_confirmed: false,
             last_time: 0.0,
             next_autosave,
             styled: None,
@@ -96,8 +100,7 @@ impl MaterialCraftApp {
         }
         let p = if self.ui.prefs.preview_size == 0 { None } else { Some(self.ui.prefs.preview_size.clamp(64, 8192)) };
         if self.session.preview_size != p {
-            self.session.preview_size = p;
-            self.session.dirty = true;
+            let _ = materialcraft_engine::execute(&mut self.session, "view.previewSize", &serde_json::json!({"size": p.unwrap_or(0)}));
         }
     }
 
@@ -123,8 +126,11 @@ impl MaterialCraftApp {
             }
         }
 
-        match materialcraft_engine::execute(&mut self.session, id, &params) {
+        match cook::execute_guarded(&mut self.session, id, &params) {
             Ok(v) => {
+                if id == "view.previewSize" {
+                    self.ui.prefs.preview_size = self.session.preview_size.unwrap_or(0);
+                }
                 self.close_subgraph_after(id);
                 if matches!(id, "view.3d.assign" | "view.3d.outputs") {
                     self.ui.dock.focus(docking::Panel::View3d);
@@ -245,12 +251,13 @@ impl MaterialCraftApp {
             self.styled = Some(style);
         }
         let scale = self.ui.prefs.ui_scale.clamp(0.5, 3.0);
-        if (ctx.zoom_factor() - scale).abs() > 1e-3 {
+        if (ctx.zoom_factor() - scale).abs() > 1e-3 && !ctx.input(|input| input.pointer.any_down()) {
             ctx.set_zoom_factor(scale);
         }
         if ctx.input(|input| input.pointer.any_pressed()) {
             self.session.finish_edit();
         }
+        crate::unsaved::handle_close(self, ctx);
         control::poll(self, ctx);
         web_files::poll(self);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
@@ -294,3 +301,7 @@ impl MaterialCraftApp {
         self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
     }
 }
+
+#[cfg(test)]
+#[path = "material_craft_app.test.rs"]
+mod tests;

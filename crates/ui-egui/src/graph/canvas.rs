@@ -6,6 +6,7 @@ use super::{
     wire_geometry::{bezier, bezier_points, wire_at},
 };
 use super::{node_card, node_card::port as port_pos, node_layout::NodeLayout};
+use crate::i18n::tr;
 use crate::{MaterialCraftApp, theme::Tokens};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;
@@ -222,7 +223,21 @@ fn canvas(app: &mut MaterialCraftApp, ui: &mut Ui) {
             if let Some(img) = result.and_then(|r| r.outputs.first().and_then(materialcraft_engine::eval::NodeOutput::as_image)) {
                 let bits = if node.base.format == materialcraft_engine::core::OutputFormat::Inherit { graph.format.bits() } else { node.base.format.bits() };
 
-                let txt = format!("{}x{} - {}{}", img.w, img.h, if img.is_gray() { "L" } else { "C" }, bits);
+                let format = format!("{}{bits}", if img.is_gray() { "L" } else { "C" });
+                let txt = if let Some(limit) = app.session.preview_size {
+                    let [width, height] = graph.size_px();
+                    resp.clone().on_hover_text(format!(
+                        "{} x {} ({bits}bpc)\n{}: {width} x {height}\n{}: {limit} px\n{}",
+                        img.w,
+                        img.h,
+                        tr("Parent size"),
+                        tr("Preview limit"),
+                        tr("Change Preview size while editing in Edit > Preferences. Exports use each node's configured output size.")
+                    ));
+                    format!("{}x{} {}", img.w, img.h, tr("Preview"))
+                } else {
+                    format!("{}x{} - {format}", img.w, img.h)
+                };
                 painter.text(footer.center(), Align2::CENTER_CENTER, txt, small.clone(), theme.text_dim);
             }
             if node.def == "output" {

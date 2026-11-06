@@ -34,3 +34,5 @@ mod tests;
 
 mod read;
 mod write;
+
+mod preview_binding;

@@ -27,6 +27,7 @@ pub(super) struct SbsReader<'text, 'warnings> {
     pub(super) graph_names: HashMap<String, String>,
     pub(super) resource_names: HashMap<String, String>,
     pub(super) node_count: usize,
+    pub(super) resource_bytes: usize,
 }
 
 impl<'text> SbsReader<'text, '_> {
@@ -61,6 +62,7 @@ impl<'text> SbsReader<'text, '_> {
     }
 
     pub(super) fn read_resource(&mut self, item: XmlNode, identifier: &str, path: &str, pkg: &mut Package, linked: &dyn Fn(&str) -> Option<Vec<u8>>) {
+        let remaining = super::constant::MAX_PACKAGE_BYTES.saturating_sub(self.resource_bytes).min(super::constant::MAX_EMBEDDED_BYTES);
         let kind = child_value(item, "type").unwrap_or("bitmap");
         let format = child_value(item, "format").unwrap_or("png").trim().to_ascii_lowercase();
         let source = child_element(item, "source");
@@ -68,7 +70,7 @@ impl<'text> SbsReader<'text, '_> {
         let mut why_missing = String::new();
 
         if let Some(embedded) = source.and_then(|s| child_element(s, "binembedded")) {
-            match decode_embedded(child_value(embedded, "strdata").unwrap_or("")) {
+            match decode_embedded(child_value(embedded, "strdata").unwrap_or(""), remaining) {
                 Ok(data) => bytes = Some(data),
                 Err(e) => why_missing = format!("its embedded data is damaged ({e})"),
             }
@@ -95,7 +97,9 @@ impl<'text> SbsReader<'text, '_> {
         let name = unique_name(&taken, if identifier.is_empty() { "resource" } else { identifier });
         self.resource_names.insert(path.to_string(), name.clone());
         match bytes {
+            Some(data) if data.len() > remaining => self.warnings.add(format!("resource `{path}` exceeds the remaining {remaining}-byte package budget")),
             Some(data) => {
+                self.resource_bytes += data.len();
                 let ext = if kind == "svg" { "svg".to_string() } else { format };
 
                 pkg.resources.push(Resource::new(name.clone(), crate::safe_file_name(&format!("{name}.{ext}")), ResourceBytes::new(data)));
@@ -121,6 +125,7 @@ impl<'text> SbsReader<'text, '_> {
 
         // The default parent size option ("11x11", log2 sizes)
         for option in child_element(element, "options").into_iter().flat_map(|o| children_named(o, "option")) {
+            super::preview_binding::read(option, &mut graph);
             if child_value(option, "name") == Some("defaultParentSize")
                 && let Some((width, height)) = child_value(option, "value").and_then(|v| v.split_once('x'))
             {
