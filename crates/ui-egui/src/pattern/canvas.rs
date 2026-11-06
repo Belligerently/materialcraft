@@ -1,5 +1,6 @@
+use crate::graph::canvas_geometry::CanvasGeometry;
 use egui::{Color32, Rect, Sense, Stroke, Ui, vec2};
-use materialcraft_engine::core::{NodeId, PatternGraph};
+use materialcraft_engine::core::NodeId;
 use materialcraft_engine::nodes::PortKind;
 use std::collections::BTreeMap;
 
@@ -15,94 +16,79 @@ const PORT_COLOR: Color32 = Color32::from_rgb(165, 157, 215);
 
 pub(crate) fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let Some(mut editor) = app.pattern_editor.take() else { return };
-    let Some(mut graph) = editor.current(app) else { return };
-    editor.selection.retain(|id| graph.nodes.iter().any(|node| node.id == *id));
-    let parent = app.session.graph().map(|graph| graph.name.clone()).unwrap_or_default();
-    let label = app.session.graph().ok().and_then(|graph| graph.node(editor.node).ok()).map(crate::graph::node_label).unwrap_or_default();
-    let mut back = false;
-    ui.horizontal(|ui| {
-        back = ui.button(&parent).on_hover_text(tr("Return to parent graph")).clicked();
-        ui.label("›");
-        ui.label(label);
-    });
-    ui.horizontal(|ui| {
-        if ui.button(tr("Frame all")).clicked() {
-            editor.framed = false;
-        }
-        ui.checkbox(&mut app.ui.prefs.snap_to_grid, tr("Snap to grid"));
-        if graph.root.is_none() {
-            ui.label(tr("Set a node as the root"));
-        }
-    });
 
+    if let Some(graph) = editor.current(app) {
+        let present: std::collections::BTreeSet<_> = graph.nodes.iter().map(|node| node.id).collect();
+        editor.selection.retain(|id| present.contains(id));
+    }
+    let Some((geometry, response, camera)) = paint(app, &mut editor, ui) else { return };
+
+    app.ui.frame_all = false;
+    geometry.publish(&mut app.graph, response.rect);
+    app.graph.frames.clear();
+    app.graph.comments.clear();
+    super::input::handle(app, &mut editor, ui, &response, &camera);
+    if let Some(PatternDrag::Wire { node, slot }) = editor.drag
+        && let Some(source) = app.graph.ports.iter().find(|port| {
+            port.node.0 == u64::from(node)
+                && port.output == slot.is_some()
+                && slot.is_none_or(|slot| port.port == format!("output{slot}") || slot == 0 && port.port == "output")
+        })
+        && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
+    {
+        let points = if slot.is_some() { geometry::wire(source.pos, pointer) } else { geometry::wire(pointer, source.pos) };
+        ui.painter_at(response.rect).add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, Stroke::new(2.0, PORT_COLOR)));
+    }
+    response.context_menu(|ui| super::context_menu::show(app, &mut editor, ui));
     editor.inspected_node = crate::graph::node_selection::inspected(&editor.selection, editor.inspected_node);
-    let changed = canvas(app, &mut editor, &mut graph, ui);
-    editor.inspected_node =
-        crate::graph::node_selection::inspected(&editor.selection, editor.inspected_node).filter(|id| graph.nodes.iter().any(|node| node.id == *id));
-    if changed {
-        editor.commit(app, graph);
-    }
-    if back {
-        app.function_editor = None;
-    } else {
-        app.pattern_editor = Some(editor);
-    }
+    app.pattern_editor = Some(editor);
 }
 
-fn canvas(app: &mut MaterialCraftApp, editor: &mut PatternEditor, graph: &mut PatternGraph, ui: &mut Ui) -> bool {
+fn paint(app: &MaterialCraftApp, editor: &mut PatternEditor, ui: &mut Ui) -> Option<(CanvasGeometry, egui::Response, GraphCamera)> {
+    let graph = editor.current(app)?;
+    let selected: std::collections::BTreeSet<_> = editor.selection.iter().copied().collect();
+    let mut geometry = CanvasGeometry::default();
     let (bounds, response) = ui.allocate_exact_size(ui.available_size().max(vec2(100.0, 100.0)), Sense::click_and_drag());
     crate::widgets::name(&response, egui::Role::Canvas, "FX-Map graph");
     let painter = ui.painter_at(bounds);
     painter.rect_filled(bounds, 0.0, Color32::from_rgb(0x26, 0x28, 0x2c));
     let snap = app.ui.prefs.snap_to_grid;
-    let frame_key = response.hovered() && !ui.ctx().egui_wants_keyboard_input() && ui.input(|input| input.key_pressed(egui::Key::F));
+    let frame_key = GraphCamera::frame_key(ui, bounds);
     if !editor.framed || app.ui.frame_all || frame_key {
-        let destination = graph.nodes.iter().map(|node| geometry::bounds(node, editor, snap)).fold(Rect::NOTHING, |all, node| all.union(node));
-        if destination.is_finite() {
-            let destination = destination.expand(48.0);
-            editor.zoom = (bounds.width() / destination.width()).min(bounds.height() / destination.height()).clamp(0.15, 1.2);
-            editor.pan = destination.center().to_vec2() - bounds.size() * 0.5 / editor.zoom;
-        }
+        let selected_only = frame_key && !editor.selection.is_empty();
+        let destination = graph
+            .nodes
+            .iter()
+            .filter(|node| !selected_only || selected.contains(&node.id))
+            .map(|node| geometry::bounds(node, editor, snap, selected.contains(&node.id)))
+            .fold(Rect::NOTHING, |all, node| all.union(node));
+        let camera = GraphCamera::fit(bounds, destination);
+        editor.pan = camera.pan;
+        editor.zoom = camera.zoom;
         editor.framed = true;
-        app.ui.frame_all = false;
     }
 
     let mut camera = GraphCamera { origin: bounds.min, pan: editor.pan, zoom: editor.zoom };
-    if response.hovered()
-        && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
-    {
-        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            let before = camera.to_graph(pointer);
-            editor.zoom = (editor.zoom * (scroll * 0.0025).exp()).clamp(0.15, 3.0);
-            editor.pan = before.to_vec2() - (pointer - bounds.min) / editor.zoom;
-            camera.pan = editor.pan;
-            camera.zoom = editor.zoom;
-        }
-    }
-    crate::graph::canvas::grid(&painter, &camera, bounds);
-    app.graph.view = bounds;
-    app.graph.rects.clear();
-    app.graph.ports.clear();
-    app.graph.wires.clear();
-    app.graph.frames.clear();
-    app.graph.comments.clear();
-
+    camera.zoom_from_input(ui, bounds);
+    editor.pan = camera.pan;
+    editor.zoom = camera.zoom;
+    crate::graph::grid::paint(&painter, &camera, bounds);
     let rectangles: BTreeMap<_, _> = graph
         .nodes
         .iter()
         .map(|node| {
-            let bounds = geometry::bounds(node, editor, snap);
+            let bounds = geometry::bounds(node, editor, snap, selected.contains(&node.id));
             (node.id, Rect::from_min_max(camera.to_screen(bounds.min), camera.to_screen(bounds.max)))
         })
         .collect();
     for node in &graph.nodes {
         let Some(bounds) = rectangles.get(&node.id) else { continue };
+
         for (slot, child) in node.children.iter().enumerate() {
             if let Some(child_bounds) = child.and_then(|id| rectangles.get(&id)) {
                 let points = geometry::wire(geometry::port(*bounds, Some(slot), node.children.len()), child_bounds.center_top());
                 painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, Stroke::new(2.0, PORT_COLOR)));
-                app.graph.wires.push(((NodeId(u64::from(node.id)), node.kind.child_port(slot).unwrap_or_default().to_string()), points));
+                geometry.wires.push(((NodeId(u64::from(node.id)), node.kind.child_port(slot).unwrap_or_default().to_string()), points));
             }
         }
     }
@@ -110,8 +96,10 @@ fn canvas(app: &mut MaterialCraftApp, editor: &mut PatternEditor, graph: &mut Pa
     let tokens = Tokens::get(ui.ctx());
     for node in &graph.nodes {
         let Some(bounds) = rectangles.get(&node.id).copied() else { continue };
-        app.graph.rects.push((NodeId(u64::from(node.id)), bounds));
-        let outline = if editor.selection.contains(&node.id) { tokens.accent } else { Color32::from_gray(30) };
+
+        geometry.rects.push((NodeId(u64::from(node.id)), bounds));
+        let outline = if selected.contains(&node.id) { tokens.accent } else { Color32::from_gray(30) };
+
         super::node_canvas::paint(&painter, bounds, node.kind, editor.zoom, outline);
         if graph.root == Some(node.id) {
             painter.text(
@@ -132,7 +120,7 @@ fn canvas(app: &mut MaterialCraftApp, editor: &mut PatternEditor, graph: &mut Pa
             painter.circle_stroke(position, 5.0 * editor.zoom, Stroke::new(1.5, Color32::from_gray(30)));
             ui.interact(Rect::from_center_size(position, vec2(16.0, 16.0)), response.id.with((node.id, slot)), Sense::hover())
                 .on_hover_text(tr("Drag to connect; Alt-click to disconnect"));
-            app.graph.ports.push(PortHit {
+            geometry.ports.push(PortHit {
                 node: NodeId(u64::from(node.id)),
                 output: slot.is_some(),
                 port: slot.map_or_else(|| "input".into(), |slot| node.kind.child_port(slot).unwrap_or_default().to_string()),
@@ -143,16 +131,5 @@ fn canvas(app: &mut MaterialCraftApp, editor: &mut PatternEditor, graph: &mut Pa
         }
     }
 
-    let mut changed = super::input::handle(app, editor, graph, ui, &response, &camera);
-    if let Some(PatternDrag::Wire { node, slot }) = editor.drag
-        && let Some(bounds) = rectangles.get(&node)
-        && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
-    {
-        let count = graph.nodes.iter().find(|candidate| candidate.id == node).map_or(0, |node| node.children.len());
-        let source = geometry::port(*bounds, slot, count);
-        let points = if slot.is_some() { geometry::wire(source, pointer) } else { geometry::wire(pointer, source) };
-        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, Stroke::new(2.0, PORT_COLOR)));
-    }
-    response.context_menu(|ui| changed |= super::context_menu::show(app, editor, graph, ui));
-    changed
+    Some((geometry, response, camera))
 }

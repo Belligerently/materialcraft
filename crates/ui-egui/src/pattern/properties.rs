@@ -1,11 +1,7 @@
 use egui::Ui;
 use materialcraft_engine::core::{FunctionGraph, Value};
 
-use crate::{
-    MaterialCraftApp,
-    function::{FunctionEditor, FunctionTarget},
-    i18n::tr,
-};
+use crate::{MaterialCraftApp, function::FunctionTarget, i18n::tr};
 
 pub(crate) fn title(app: &MaterialCraftApp) -> String {
     let kind = app.pattern_editor.as_ref().and_then(|editor| {
@@ -17,13 +13,15 @@ pub(crate) fn title(app: &MaterialCraftApp) -> String {
 }
 
 pub(crate) fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
-    let Some(editor) = app.pattern_editor.take() else { return };
-    let Some(mut graph) = editor.current(app) else { return };
-    let mut changed = false;
+    let Some(mut editor) = app.pattern_editor.take() else { return };
+
+    let Some(graph) = editor.current(app) else { return };
+
+    let mut edits = Vec::new();
     let mut function_target = None;
 
     let inspected = crate::graph::node_selection::inspected(&editor.selection, editor.inspected_node);
-    if let Some(node) = graph.nodes.iter_mut().find(|node| Some(node.id) == inspected) {
+    if let Some(node) = graph.nodes.iter().find(|node| Some(node.id) == inspected) {
         ui.heading(tr(node.kind.label()));
         if graph.root == Some(node.id) {
             ui.label(tr("Root node"));
@@ -32,25 +30,33 @@ pub(crate) fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
             for parameter in &definition.params {
                 ui.push_id(parameter.id, |ui| {
                     ui.label(tr(parameter.label));
-                    let mut value = node.parameters.get(parameter.id).unwrap_or(&parameter.default).clone();
                     ui.horizontal_wrapped(|ui| {
+                        let value = node.parameters.get(parameter.id).unwrap_or(&parameter.default);
                         if matches!(value, Value::Function(_)) {
                             if ui.small_button(tr("Edit function")).clicked() {
                                 function_target = Some(FunctionTarget::Pattern { node: node.id, parameter: parameter.id.to_string() });
                             }
                             if ui.small_button(tr("Reset")).clicked() {
-                                node.parameters.remove(parameter.id);
-                                changed = true;
+                                edits.push((materialcraft_engine::PatternEdit::Value { id: node.id, parameter: parameter.id.into(), value: None }, false));
                             }
                         } else {
+                            let mut value = value.clone();
                             if super::parameter_value::show(ui, parameter.id, &mut value) {
-                                node.parameters.insert(parameter.id.to_string(), value.clone());
-                                changed = true;
+                                edits.push((
+                                    materialcraft_engine::PatternEdit::Value { id: node.id, parameter: parameter.id.into(), value: Some(value.clone()) },
+                                    true,
+                                ));
                             }
                             if ui.small_button(tr("Function")).clicked() {
-                                node.parameters.insert(parameter.id.to_string(), Value::Function(Box::new(FunctionGraph::constant(value))));
+                                edits.push((
+                                    materialcraft_engine::PatternEdit::Value {
+                                        id: node.id,
+                                        parameter: parameter.id.into(),
+                                        value: Some(Value::Function(Box::new(FunctionGraph::constant(value)))),
+                                    },
+                                    false,
+                                ));
                                 function_target = Some(FunctionTarget::Pattern { node: node.id, parameter: parameter.id.to_string() });
-                                changed = true;
                             }
                         }
                     });
@@ -62,11 +68,11 @@ pub(crate) fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         ui.heading(tr("FX-Map"));
         ui.label(tr("Select a node to edit its parameters"));
     }
-    if changed {
-        editor.commit(app, graph);
+    for (edit, merge) in edits {
+        editor.edit(app, edit, merge);
     }
     if let Some(target) = function_target {
-        app.function_editor = Some(FunctionEditor::new(editor.node, target));
+        crate::graph::subgraph_navigation::open_function(app, editor.node, target);
     }
     app.pattern_editor = Some(editor);
 }

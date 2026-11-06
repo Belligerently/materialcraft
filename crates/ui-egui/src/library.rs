@@ -39,14 +39,16 @@ fn category_icon(top: &str) -> &'static str {
 }
 
 pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
-    if crate::pattern::active(app) {
-        crate::pattern::library::show(app, ui);
-        return;
-    }
-
-    if app.session.graph().is_ok_and(|graph| graph.function.is_some()) {
-        crate::function::library::show(app, ui);
-        return;
+    match crate::graph::editor_target::EditorTarget::resolve(app) {
+        crate::graph::editor_target::EditorTarget::Function => {
+            crate::function::library::show(app, ui);
+            return;
+        }
+        crate::graph::editor_target::EditorTarget::Pattern => {
+            crate::pattern::library::show(app, ui);
+            return;
+        }
+        crate::graph::editor_target::EditorTarget::Material => {}
     }
 
     let tk = Tokens::get(ui.ctx());

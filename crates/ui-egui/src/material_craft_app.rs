@@ -19,9 +19,10 @@ pub struct MaterialCraftApp {
     pub graph: graph::GraphView,
     pub view3d: view3d::View3dState,
     pub view2d: view2d::View2dState,
-    /// The function graph editor window, when open
+    /// Embedded graph editors in the main graph panel
     pub pattern_editor: Option<pattern::PatternEditor>,
     pub function_editor: Option<function::FunctionEditor>,
+    pub(crate) graph_parents: Vec<graph::graph_parent::GraphParent>,
     /// Synthetic input from the control channel, fed to egui on the next frames
     pub input_queue: VecDeque<control::Scripted>,
     /// Replies waiting for the next window capture (`ui.screenshot`)
@@ -39,6 +40,7 @@ pub struct MaterialCraftApp {
     pub fonts: fonts::UiFonts,
     /// The icon font is installed (it takes effect on the frame after `set_fonts`)
     fonts_ready: bool,
+    ui_gesture_active: bool,
 }
 
 impl MaterialCraftApp {
@@ -68,6 +70,7 @@ impl MaterialCraftApp {
             view3d: view3d::View3dState::default(),
             view2d: view2d::View2dState::default(),
             function_editor: None,
+            graph_parents: Vec::new(),
             pattern_editor: None,
             input_queue: VecDeque::new(),
             pending_screenshots: Vec::new(),
@@ -79,6 +82,7 @@ impl MaterialCraftApp {
             styled: None,
             fonts: fonts::UiFonts::default(),
             fonts_ready: false,
+            ui_gesture_active: false,
         };
         i18n::set_language(&app.ui.prefs.language);
         app.apply_prefs();
@@ -122,6 +126,9 @@ impl MaterialCraftApp {
         match materialcraft_engine::execute(&mut self.session, id, &params) {
             Ok(v) => {
                 self.close_subgraph_after(id);
+                if matches!(id, "view.3d.assign" | "view.3d.outputs") {
+                    self.ui.dock.focus(docking::Panel::View3d);
+                }
                 Some(v)
             }
             Err(e) => {
@@ -134,8 +141,25 @@ impl MaterialCraftApp {
     pub(crate) fn close_subgraph_after(&mut self, command: &str) {
         if command.starts_with("file.new") || matches!(command, "file.open" | "graph.open" | "graph.delete" | "graph.duplicate") {
             self.graph.inspected_node = None;
+            self.graph_parents.clear();
             self.pattern_editor = None;
             self.function_editor = None;
+        }
+        self.reconcile_editors();
+        if (materialcraft_engine::selection_commands::supports(command) || matches!(command, "edit.undo" | "edit.redo"))
+            && let Some(editor) = &mut self.function_editor
+            && matches!(editor.target, function::FunctionTarget::Graph)
+        {
+            editor.selection = self.session.selection.iter().filter_map(|id| u32::try_from(id.0).ok()).collect();
+        }
+    }
+
+    pub(crate) fn reconcile_editors(&mut self) {
+        if self.function_editor.as_ref().is_some_and(|editor| editor.current(self).is_none()) {
+            self.function_editor = None;
+        }
+        if self.pattern_editor.as_ref().is_some_and(|editor| editor.current(self).is_none()) {
+            self.pattern_editor = None;
         }
     }
 
@@ -224,6 +248,9 @@ impl MaterialCraftApp {
         if (ctx.zoom_factor() - scale).abs() > 1e-3 {
             ctx.set_zoom_factor(scale);
         }
+        if ctx.input(|input| input.pointer.any_pressed()) {
+            self.session.finish_edit();
+        }
         control::poll(self, ctx);
         web_files::poll(self);
         for f in ctx.input(|i| i.raw.dropped_files.clone()) {
@@ -233,6 +260,7 @@ impl MaterialCraftApp {
         cook::drive(self, ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.autosave(now);
+        self.reconcile_editors();
         menus::shortcuts(self, ctx);
         self.toasts.retain(|t| t.until > now);
         if !self.input_queue.is_empty() {
@@ -255,7 +283,11 @@ impl MaterialCraftApp {
         toolbar::status_bar(self, ui);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(theme::Tokens::get(&ctx).chrome)).show(ui, |ui| docking::show(self, ui));
         windows::show(self, &ctx);
-        function::show(self, &ctx);
+        let gesture_active = ctx.input(|input| input.pointer.any_down()) || ctx.egui_wants_keyboard_input();
+        if !gesture_active && (self.ui_gesture_active || ctx.input(|input| input.pointer.any_released())) {
+            self.session.finish_edit();
+        }
+        self.ui_gesture_active = gesture_active;
         crate::toast::show(self, &ctx);
         control::request_screenshots(self, &ctx);
         let dt = (now_ms() - t0) as f32;

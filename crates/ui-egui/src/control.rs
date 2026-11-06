@@ -240,20 +240,25 @@ pub fn handle(app: &mut MaterialCraftApp, ctx: &egui::Context, method: &str, p: 
         }
         "ui.inspect" => {
             let rect = |r: egui::Rect| json!([r.min.x, r.min.y, r.width(), r.height()]);
+            let target = crate::graph::editor_target::EditorTarget::resolve(app);
+            let (view, nodes, ports) = (app.graph.view, &app.graph.rects, &app.graph.ports);
             ok(json!({
                 "state": app.ui,
-                "graphView": rect(app.graph.view),
+                "graphView": rect(view),
                 "selection": app.session.selection,
                 "inspectedNode": app.graph.inspected_node,
-                "subgraph": app.pattern_editor.as_ref().filter(|_| crate::pattern::active(app))
-                    .map(|editor| json!({"kind": "pattern", "graph": editor.graph, "node": editor.node.0, "selection": editor.selection, "inspectedNode": editor.inspected_node}))
-                    .or_else(|| app.function_editor.as_ref().filter(|editor| matches!(editor.target, crate::function::FunctionTarget::Graph(_)))
-                        .map(|editor| json!({"kind": "function", "graph": app.session.graph, "selection": editor.selection, "inspectedNode": editor.inspected_node}))),
+                "subgraph": match target {
+                    crate::graph::editor_target::EditorTarget::Function => app.function_editor.as_ref()
+                        .map(|editor| json!({"kind": "function", "graph": app.session.graph, "node": editor.node, "target": editor.command_target(), "selection": editor.selection, "inspectedNode": editor.inspected_node})),
+                    crate::graph::editor_target::EditorTarget::Pattern => app.pattern_editor.as_ref()
+                        .map(|editor| json!({"kind": "pattern", "graph": editor.graph, "node": editor.node.0, "selection": editor.selection, "inspectedNode": editor.inspected_node})),
+                    crate::graph::editor_target::EditorTarget::Material => None,
+                },
                 "annotationSelection": app.session.annotation_selection,
                 "frames": app.graph.frames.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
                 "comments": app.graph.comments.iter().map(|(id, bounds)| json!({"id": id, "rect": rect(*bounds)})).collect::<Vec<_>>(),
-                "nodes": app.graph.rects.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
-                "ports": app.graph.ports.iter().map(|port| json!({
+                "nodes": nodes.iter().map(|(id, r)| json!({"id": id.0, "rect": rect(*r)})).collect::<Vec<_>>(),
+                "ports": ports.iter().map(|port| json!({
                     "node": port.node.0,
                     "port": port.port,
                     "label": port.label,

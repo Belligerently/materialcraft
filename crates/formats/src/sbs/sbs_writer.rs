@@ -1,18 +1,17 @@
 use super::base_parameters::base_params_xml;
 use super::canvas::write_canvas_items;
-use super::constant::FORMAT_VERSION;
-use super::constant::{FIRST_UID, NODE_HALF_SIZE, SELF_DEPENDENCY};
-use super::embedded::encode_embedded;
+use super::component_usage;
+use super::constant::NODE_HALF_SIZE;
 use super::filter_map::filter_by_def;
 use super::function_graph;
 use super::node_identifiers::NodeIdentifiers;
 use super::node_parameter::{param_xml, special_filter_params_xml, text_param};
-use super::output::{output_type, usage_name};
+use super::output::output_type;
 use super::sbs_value::{constant_xml, exposed_type_code};
 use super::type_code;
 use super::xml::{format_float, is_parameters_element, xml_escape};
 use crate::{FormatError, Result};
-use materialcraft_core::{Connection, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, Package, Value, missing_ports};
+use materialcraft_core::{ComponentUsage, Connection, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, Package, Value, missing_ports};
 use materialcraft_nodes::find;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -120,6 +119,7 @@ impl SbsWriter {
                 out.push_str("<connections>");
                 for wire in wires {
                     let Some(from_uid) = node_uids.get(&wire.from) else { continue };
+
                     let Some((_, _, output_uid)) = node_outputs.get(&wire.from).and_then(|o| o.iter().find(|(port, _, _)| *port == wire.from_port)) else {
                         continue;
                     };
@@ -169,6 +169,7 @@ impl SbsWriter {
             let uid = self.next_uid();
             entries.insert(node.id, uid);
             let fallback = if node.def == "input_value" { Value::Float(0.0) } else { Value::Color([0.5, 0.5, 0.5, 1.0]) };
+
             let value = node.params.get("default").unwrap_or(&fallback);
             let default = constant_xml(value).unwrap_or_default();
             let code = match node.def.as_str() {
@@ -179,14 +180,17 @@ impl SbsWriter {
 
             let _ = write!(
                 out,
-                "<paraminput><identifier v=\"{}\"/><uid v=\"{uid}\"/><isConnectable v=\"1\"/><type v=\"{code}\"/><defaultValue>{default}</defaultValue><defaultWidget><name v=\"\"/><options/></defaultWidget></paraminput>",
+                "<paraminput><identifier v=\"{}\"/><uid v=\"{uid}\"/><isConnectable v=\"1\"/><type v=\"{code}\"/><defaultValue>{default}</defaultValue><defaultWidget><name v=\"\"/><options/></defaultWidget>",
                 xml_escape(&text_param(node, "identifier", "input"))
             );
+            component_usage::write(out, node, ComponentUsage::ANY_INDEX);
+            out.push_str("</paraminput>");
         }
 
         for exposed in &graph.exposed {
             let default = constant_xml(graph.inputs.get(&exposed.id).unwrap_or(&exposed.default)).unwrap_or_else(|| "<constantValueFloat1 v=\"0\"/>".into());
             let group = if exposed.group.is_empty() { String::new() } else { format!("<group v=\"{}\"/>", xml_escape(&exposed.group)) };
+
             let _ = write!(
                 out,
                 "<paraminput><identifier v=\"{}\"/><uid v=\"{}\"/><attributes><label v=\"{}\"/></attributes><type v=\"{}\"/><defaultValue>{default}</defaultValue><defaultWidget><name v=\"slider\"/><options><option><name v=\"min\"/><value v=\"{}\"/></option><option><name v=\"max\"/><value v=\"{}\"/></option></options></defaultWidget>{group}</paraminput>",
@@ -209,18 +213,19 @@ impl SbsWriter {
         for node in graph.nodes.iter().filter(|n| n.def == "output") {
             let uid = self.next_uid();
             output_uids.insert(node.id, uid);
-            let usage = node.params.get("usage").and_then(Value::as_i32).unwrap_or(0).max(0) as u32;
             let code = output_type(graph, node.id, "output");
             let channels = format!("<channels v=\"{code}\"/>");
             let identifier = text_param(node, "identifier", "output");
             let label = if node.label.is_empty() { identifier.clone() } else { node.label.clone() };
+
             let _ = write!(
                 out,
-                "<graphoutput><identifier v=\"{}\"/><uid v=\"{uid}\"/><attributes><label v=\"{}\"/></attributes><usages><usage><components v=\"RGBA\"/><name v=\"{}\"/></usage></usages><group v=\"Material\"/>{channels}</graphoutput>",
+                "<graphoutput><identifier v=\"{}\"/><uid v=\"{uid}\"/><attributes><label v=\"{}\"/></attributes>",
                 xml_escape(&identifier),
-                xml_escape(&label),
-                usage_name(usage)
+                xml_escape(&label)
             );
+            component_usage::write(out, node, 0);
+            let _ = write!(out, "<group v=\"Material\"/>{channels}</graphoutput>");
         }
 
         out.push_str("</graphOutputs>");
@@ -276,6 +281,7 @@ impl SbsWriter {
                     let value_of = |id: &str| node.params.get(id).or_else(|| catalog_def.param(id).map(|p| &p.default));
                     for (sbs_name, mc_name) in filter.params {
                         let Some(value) = value_of(mc_name) else { continue };
+
                         let binding =
                             node.bindings.get(*mc_name).map(|identifier| function_graph::binding(identifier, value)).transpose().map_err(FormatError::Io)?;
                         let function = node.functions.get(*mc_name).or(binding.as_ref()).or_else(|| match value {
@@ -310,62 +316,6 @@ impl SbsWriter {
         }
         Ok(())
     }
-}
-pub fn write_sbs(pkg: &Package) -> Result<Vec<u8>> {
-    let mut writer = SbsWriter { last_uid: FIRST_UID, external_packages: BTreeMap::new() };
-    let self_uid = writer.next_uid();
-
-    let mut content = String::from("<content>");
-    for graph in &pkg.graphs {
-        if graph.function.is_some() {
-            super::standalone_function::write(&mut content, graph, &mut writer)?;
-        } else {
-            writer.write_graph(&mut content, pkg, graph, self_uid)?;
-        }
-    }
-    if !pkg.resources.is_empty() {
-        let _ = write!(content, "<group><uid v=\"{}\"/><identifier v=\"Resources\"/><content>", writer.next_uid());
-        for resource in &pkg.resources {
-            let svg = resource.file.to_ascii_lowercase().ends_with(".svg");
-            let ext = resource.file.rsplit_once('.').map_or("png", |(_, e)| e);
-            let _ = write!(
-                content,
-                "<resource><identifier v=\"{}\"/><uid v=\"{}\"/><type v=\"{}\"/><format v=\"{}\"/><filepath v=\"\"/><source><binembedded><datalength v=\"{}\"/><strdata v=\"{}\"/></binembedded></source></resource>",
-                xml_escape(&resource.name),
-                writer.next_uid(),
-                if svg { "svg" } else { "bitmap" },
-                xml_escape(ext),
-                resource.bytes.len(),
-                encode_embedded(resource.bytes.as_slice())?
-            );
-        }
-        content.push_str("</content></group>");
-    }
-    content.push_str("</content>");
-
-    let mut out = String::with_capacity(content.len() + 4096);
-    let _ = write!(
-        out,
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><package><identifier v=\"{}\"/><formatVersion v=\"{FORMAT_VERSION}\"/><updaterVersion v=\"{FORMAT_VERSION}\"/><fileUID v=\"0\"/><versionUID v=\"0\"/><dependencies>",
-        xml_escape(&pkg.name)
-    );
-    let write_dependency = |out: &mut String, file: &str, uid: u64| {
-        let _ = write!(
-            out,
-            "<dependency><filename v=\"{}\"/><uid v=\"{uid}\"/><type v=\"package\"/><fileUID v=\"0\"/><versionUID v=\"0\"/></dependency>",
-            xml_escape(file)
-        );
-    };
-
-    write_dependency(&mut out, SELF_DEPENDENCY, self_uid);
-    for (file, uid) in &writer.external_packages {
-        write_dependency(&mut out, file, *uid);
-    }
-    out.push_str("</dependencies>");
-    out.push_str(&content);
-
-    out.push_str("</package>\n");
-    Ok(out.into_bytes())
 }
 pub(super) type WrittenOutputs = Vec<(String, u32, u64)>;
 

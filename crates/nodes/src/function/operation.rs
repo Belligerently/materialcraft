@@ -14,8 +14,8 @@ pub(crate) fn evaluate(
     context: &EvaluationContext<'_>,
 ) -> Result<Value, String> {
     let op = instruction.definition.id;
-    let first = || arguments.first().ok_or("missing first operand".to_string());
-    let second = || arguments.get(1).ok_or("missing second operand".to_string());
+    let first = || arguments.first().ok_or("missing first operand");
+    let second = || arguments.get(1).ok_or("missing second operand");
     let name = || match &instruction.value {
         Some(Value::Text(name)) => Ok(name.as_str()),
         _ => Err("variable name must be a string".to_string()),
@@ -26,22 +26,26 @@ pub(crate) fn evaluate(
         if value_type::type_code(&value) != instruction.type_code {
             return Err("constant has the wrong type".into());
         }
+
         return Ok(value);
     }
+
     if op.starts_with("get_") {
         let name = name()?;
         let value = match name {
             "$pos" => Value::Float2(context.position),
             "$size" => Value::Float2(context.size),
             "$sizelog2" => Value::Float2(context.size.map(f32::log2)),
-            _ => variables.get(name).cloned().ok_or_else(|| format!("undefined variable `{name}`"))?,
+            _ => variables.get(name).or_else(|| context.variables.get(name)).cloned().ok_or_else(|| format!("undefined variable `{name}`"))?,
         };
 
         if value_type::type_code(&value) != instruction.type_code {
             return Err(format!("variable `{name}` has the wrong type for {op}"));
         }
+
         return Ok(value);
     }
+
     if op.starts_with("to") || op.contains("vector") || op.contains("swizzle") {
         return super::vector::evaluate(op, arguments, instruction.value.as_ref());
     }
@@ -53,11 +57,15 @@ pub(crate) fn evaluate(
             if name.is_empty() || name.starts_with('$') {
                 return Err("use a nonempty user variable name".into());
             }
+
             let value = first()?.clone();
             variables.insert(name.to_string(), value.clone());
             value
         }
-        "isdefined" => Value::Bool(variables.contains_key(name()?) || matches!(name()?, "$pos" | "$size" | "$sizelog2")),
+        "isdefined" => {
+            let name = name()?;
+            Value::Bool(variables.contains_key(name) || context.variables.contains_key(name) || matches!(name, "$pos" | "$size" | "$sizelog2"))
+        }
         "and" => Value::Bool(boolean(first()?)? && boolean(second()?)?),
         "or" => Value::Bool(boolean(first()?)? || boolean(second()?)?),
         "not" => Value::Bool(!boolean(first()?)?),

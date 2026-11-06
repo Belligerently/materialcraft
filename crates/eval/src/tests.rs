@@ -1,4 +1,4 @@
-use crate::graph_execution::{graph_tree_hash, instances_reach};
+use crate::{cache_key::graph_tree_hash, graph_instance::instances_reach};
 use materialcraft_core::{NodeId, Package, Value};
 use materialcraft_image::{Image, Kind};
 use std::sync::Mutex;
@@ -241,4 +241,33 @@ fn input_change_recooks_only_readers() {
         assert!(second.nodes[&id].cached, "node {} does not read `a`", id.0);
     }
     assert!(!second.nodes[&reader].cached, "the reader must re-cook");
+}
+
+#[test]
+fn partial_cooks_keep_shared_dependencies_and_first_duplicate_node() {
+    let mut graph = Graph::new("Partial cook");
+    graph.size = [4, 4];
+    let source = graph.add_node("uniform", [0.0; 2]);
+    let first = graph.add_node("dot", [0.0; 2]);
+    let second = graph.add_node("dot", [0.0; 2]);
+    let unrelated = graph.add_node("uniform", [0.0; 2]);
+    graph.connect(source, "output", first, "input").unwrap();
+    graph.connect(source, "output", second, "input").unwrap();
+
+    let mut duplicate = graph.node(source).unwrap().clone();
+    duplicate.def = "input_value".into();
+    graph.nodes.push(duplicate);
+    let mut package = Package::new("Partial cook");
+    package.graphs.push(graph);
+    let cache = Mutex::new(Cache::default());
+    let mut options = Options::new(&no_res);
+    options.only = Some(vec![first, second]);
+
+    let cooked = cook(&package, 0, &options, &cache);
+    assert_eq!(cooked.nodes.len(), 3);
+    assert!(!cooked.nodes.contains_key(&unrelated));
+    for id in [source, first, second] {
+        assert!(cooked.nodes[&id].error.is_none());
+        assert!(cooked.image(id, 0).is_some());
+    }
 }

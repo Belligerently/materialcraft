@@ -3,13 +3,13 @@
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use materialcraft_engine::eval::Cooked;
+use materialcraft_engine::PreviewCook;
 
 use crate::MaterialCraftApp;
 
 #[derive(Default)]
 pub struct Cooker {
-    rx: Option<Receiver<Cooked>>,
+    rx: Option<Receiver<PreviewCook>>,
     /// Stops the running cook between nodes once its result is stale.
     #[cfg(not(target_arch = "wasm32"))]
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -28,11 +28,11 @@ pub fn drive(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     if let Some(rx) = &app.cooker.rx {
         match rx.try_recv() {
             Ok(c) => {
-                if c.cancelled {
+                if c.cancelled() {
                     // A stopped cook is partial: keep the previous results and cook again.
                     app.session.dirty = true;
                 } else if !app.session.dirty {
-                    app.session.cooked = c;
+                    app.session.accept_preview(c);
                 }
                 app.cooker.rx = None;
                 app.cooker.started = None;
@@ -78,6 +78,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
     s.dirty = false;
     let pkg = s.pkg.clone();
     let (gi, max) = (s.graph, s.preview_size);
+    let materials = s.material_preview.graphs();
     let cache = s.cache.clone();
     let dec = s.resource_decoder();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -88,7 +89,7 @@ fn start(app: &mut MaterialCraftApp, now: f64) {
         let mut opts = Options::new(&dec);
         opts.max_size = max;
         opts.cancel = Some(&thread_flag);
-        let cooked = materialcraft_engine::eval::cook(&pkg, gi, &opts, &cache);
+        let cooked = PreviewCook::run(&pkg, gi, &materials, &opts, &cache);
         let _ = tx.send(cooked);
     });
     match spawned {

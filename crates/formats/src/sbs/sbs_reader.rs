@@ -1,23 +1,20 @@
 use super::base_parameters::read_base_params;
+use super::component_usage;
 use super::connection::connect_all;
-use super::constant::{MAX_GRAPHS, MAX_NODES, MAX_RESOURCES, MAX_SBS_BYTES, MAX_XML_NODES};
-use super::constant::{NODE_HALF_SIZE, SELF_DEPENDENCY, SNIFF_BYTES};
+use super::constant::{MAX_NODES, MAX_RESOURCES};
+use super::constant::{NODE_HALF_SIZE, SELF_DEPENDENCY};
 use super::embedded::decode_embedded;
 use super::filter_map::{BASE_PARAMS, FilterMap, HANDLED_PARAMS, filter_by_sbs_name};
 use super::function_graph;
 use super::input_bridge::InputBridge;
-use super::output::usage_index;
-use super::placeholder::{add_placeholder_input, fill_placeholder, placeholder_outputs, report_placeholders};
+use super::placeholder::{add_placeholder_input, fill_placeholder, placeholder_outputs};
 use super::read_node::ReadNode;
-use super::sbs_read::SbsRead;
 use super::sbs_value::{SbsValue, exposed_default, sbs_constant, to_natural_value, to_param_value};
 use super::type_code;
 use super::warnings::Warnings;
 use super::xml::{child_element, child_value, children_named, parse_floats};
-use crate::{FormatError, Result};
 use materialcraft_core::{
-    Comment, Connection, ExposedParameter, Frame, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, Package, Pin, Resource, ResourceBytes,
-    Value, srgb_to_linear,
+    ComponentUsage, Connection, ExposedParameter, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Node, NodeId, Package, Resource, ResourceBytes, Value,
 };
 use materialcraft_nodes::find;
 use roxmltree::Node as XmlNode;
@@ -100,10 +97,12 @@ impl<'text> SbsReader<'text, '_> {
         match bytes {
             Some(data) => {
                 let ext = if kind == "svg" { "svg".to_string() } else { format };
+
                 pkg.resources.push(Resource::new(name.clone(), crate::safe_file_name(&format!("{name}.{ext}")), ResourceBytes::new(data)));
             }
             None => {
                 let why = if why_missing.is_empty() { "it has no data".to_string() } else { why_missing };
+
                 self.warnings.add(format!("resource `{path}` could not be loaded: {why}"));
             }
         }
@@ -150,7 +149,7 @@ impl<'text> SbsReader<'text, '_> {
                 }
             });
             if let Some(dynamic) = dynamic {
-                self.read_canvas_items(dynamic, &mut graph);
+                super::canvas::read_canvas_items(dynamic, &mut graph, self.warnings);
             }
             return graph;
         }
@@ -167,6 +166,7 @@ impl<'text> SbsReader<'text, '_> {
             }
 
             let Some(uid) = child_value(*comp_node, "uid").map(str::to_string) else { continue };
+
             if read_nodes.contains_key(&uid) {
                 self.warnings.add(format!("graph `{name}`: duplicate node uid {uid} skipped"));
                 continue;
@@ -189,7 +189,7 @@ impl<'text> SbsReader<'text, '_> {
 
         let wires = self.read_wires(&mut graph, &comp_nodes, &read_nodes);
         connect_all(&mut graph, wires, self.warnings);
-        self.read_canvas_items(element, &mut graph);
+        super::canvas::read_canvas_items(element, &mut graph, self.warnings);
         graph
     }
     pub(super) fn read_graph_inputs(&mut self, element: XmlNode, graph: &mut Graph) -> HashMap<String, InputBridge> {
@@ -202,7 +202,10 @@ impl<'text> SbsReader<'text, '_> {
                     .and_then(sbs_constant)
                     .and_then(|value| to_param_value(&Value::Color([0.5, 0.5, 0.5, 1.0]), &value, 0))
                     .unwrap_or(Value::Color([0.5, 0.5, 0.5, 1.0]));
-                image_inputs.insert(child_value(input, "uid").unwrap_or("").to_string(), InputBridge { identifier: id, type_code: code as u32, default });
+                image_inputs.insert(
+                    child_value(input, "uid").unwrap_or("").to_string(),
+                    InputBridge { identifier: id, type_code: code as u32, usage: component_usage::read(input), default },
+                );
                 continue;
             }
             if graph.exposed.iter().any(|e| e.id == id) {
@@ -211,7 +214,10 @@ impl<'text> SbsReader<'text, '_> {
 
             let default = exposed_default(code, child_element(input, "defaultValue").and_then(sbs_constant).as_ref());
             if child_value(input, "isConnectable") == Some("1") {
-                image_inputs.insert(child_value(input, "uid").unwrap_or("").to_string(), InputBridge { identifier: id, type_code: code as u32, default });
+                image_inputs.insert(
+                    child_value(input, "uid").unwrap_or("").to_string(),
+                    InputBridge { identifier: id, type_code: code as u32, usage: component_usage::read(input), default },
+                );
                 continue;
             }
             let label = child_element(input, "attributes").and_then(|a| child_value(a, "label")).filter(|l| !l.is_empty()).unwrap_or(&id).to_string();
@@ -238,6 +244,7 @@ impl<'text> SbsReader<'text, '_> {
 
         for comp_node in comp_nodes {
             let Some(to) = child_value(*comp_node, "uid").and_then(|u| read_nodes.get(u)) else { continue };
+
             for connection in child_element(*comp_node, "connections").into_iter().flat_map(|c| children_named(c, "connection")) {
                 let sbs_input = child_value(connection, "identifier").unwrap_or("");
                 let Some(from) = child_value(connection, "connRef").and_then(|u| read_nodes.get(u)) else {
@@ -273,44 +280,6 @@ impl<'text> SbsReader<'text, '_> {
             }
         }
         wires
-    }
-
-    pub(super) fn read_canvas_items(&mut self, element: XmlNode, graph: &mut Graph) {
-        for item in child_element(element, "GUIObjects").into_iter().flat_map(|objects| children_named(objects, "GUIObject")) {
-            let layout = child_element(item, "GUILayout");
-            let position = layout.and_then(|layout| child_value(layout, "gpos")).map(parse_floats).unwrap_or_default();
-            let size = layout.and_then(|layout| child_value(layout, "size")).map(parse_floats).unwrap_or_default();
-            let x = position.first().copied().unwrap_or(0.0);
-            let y = position.get(1).copied().unwrap_or(0.0);
-            let width = size.first().copied().unwrap_or(180.0).max(8.0);
-            let height = size.get(1).copied().unwrap_or(70.0).max(8.0);
-            let text = child_value(item, "GUIName").unwrap_or("").to_string();
-
-            match child_value(item, "type") {
-                Some("COMMENT") if child_value(item, "isFrameVisible") == Some("1") => {
-                    let channels = child_value(item, "frameColor").map(parse_floats).unwrap_or_default();
-                    let color = match channels.as_slice() {
-                        &[red, green, blue, alpha, ..] => [srgb_to_linear(red), srgb_to_linear(green), srgb_to_linear(blue), alpha],
-                        _ => [0.2, 0.4, 0.8, 0.25],
-                    };
-                    let title = child_value(item, "title").unwrap_or("").to_string();
-                    let title_visible = child_value(item, "isTitleVisible") != Some("0");
-                    let id = graph.alloc_id();
-
-                    graph.frames.push(Frame { id, title, title_visible, description: text, rect: [x, y, width, height], color });
-                }
-                Some("COMMENT") => {
-                    let id = graph.alloc_id();
-                    graph.comments.push(Comment { id, text, pos: [x, y], size: [width, height] });
-                }
-                Some("PIN") => {
-                    let id = graph.alloc_id();
-                    graph.pins.push(Pin { id, name: text, pos: [x, y] });
-                }
-                Some(other) => self.warnings.add(format!("graph `{}`: canvas item `{other}` is not supported", graph.name)),
-                None => {}
-            }
-        }
     }
 
     pub(super) fn read_node(
@@ -354,6 +323,7 @@ impl<'text> SbsReader<'text, '_> {
                 if let Some(node) = node {
                     let identifier = input.map_or("input", |input| input.identifier.as_str());
                     node.params.insert("identifier".into(), Value::Text(identifier.to_string()));
+                    node.params.insert("usage".into(), Value::Enum(input.map_or(ComponentUsage::ANY_INDEX, |input| input.usage)));
                     if let Some(input) = input {
                         node.params.insert("default".into(), input.default.clone());
                     }
@@ -363,7 +333,7 @@ impl<'text> SbsReader<'text, '_> {
             }
             "compOutputBridge" => {
                 let output = child_value(implementation, "output").unwrap_or("");
-                let (identifier, usage) = outputs.get(output).cloned().unwrap_or_else(|| ("output".into(), usage_index("any")));
+                let (identifier, usage) = outputs.get(output).cloned().unwrap_or_else(|| ("output".into(), ComponentUsage::ANY_INDEX));
                 let (id, index, node) = push_node(graph, "output", pos);
                 if let Some(node) = node {
                     node.params.insert("identifier".into(), Value::Text(identifier));
@@ -465,6 +435,7 @@ impl<'text> SbsReader<'text, '_> {
         }
 
         let Some(dynamic) = child_element(param_value, "dynamicValue") else { return };
+
         match function_graph::read(dynamic) {
             Ok(graph) if matches!(like, Value::Function(_)) => {
                 node.params.insert(id.to_string(), Value::Function(Box::new(graph)));
@@ -513,93 +484,6 @@ impl<'text> SbsReader<'text, '_> {
         }
     }
 }
-pub fn read_sbs(bytes: &[u8], name: &str, linked: &dyn Fn(&str) -> Option<Vec<u8>>) -> Result<SbsRead> {
-    if bytes.len() > MAX_SBS_BYTES {
-        return Err(FormatError::BadPackage(format!("the SBS file is over the {} MB limit", MAX_SBS_BYTES >> 20)));
-    }
-
-    let text = std::str::from_utf8(bytes).map_err(|e| FormatError::BadPackage(format!("the SBS file is not UTF-8 text: {e}")))?;
-    let text = text.trim_start_matches('\u{feff}');
-    let options = roxmltree::ParsingOptions { allow_dtd: false, nodes_limit: MAX_XML_NODES };
-    let doc = roxmltree::Document::parse_with_options(text, options).map_err(|e| FormatError::BadPackage(format!("the SBS file is not valid XML: {e}")))?;
-    let root = doc.root_element();
-    if root.tag_name().name() != "package" {
-        return Err(FormatError::BadPackage("not an SBS package (the root element is not <package>)".into()));
-    }
-
-    let mut warnings = Warnings::default();
-    let file_stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
-    let file_stem = file_stem.rsplit_once('.').map_or(file_stem, |(stem, _)| stem).trim();
-    let package_name = match child_value(root, "identifier").map(str::trim) {
-        Some(id) if !id.is_empty() && id != "Unsaved Package" => id.to_string(),
-        _ if !file_stem.is_empty() => file_stem.to_string(),
-        _ => "Untitled package".to_string(),
-    };
-
-    let mut reader =
-        SbsReader { text, warnings: &mut warnings, dependencies: HashMap::new(), graph_names: HashMap::new(), resource_names: HashMap::new(), node_count: 0 };
-    for dependency in child_element(root, "dependencies").into_iter().flat_map(|d| children_named(d, "dependency")) {
-        if let (Some(uid), Some(file)) = (child_value(dependency, "uid"), child_value(dependency, "filename")) {
-            reader.dependencies.insert(uid.to_string(), file.to_string());
-        }
-    }
-
-    // Load resources before resolving graph references
-    let content = child_element(root, "content");
-    let mut pkg = Package::new(&package_name);
-    let mut graph_elements: Vec<(String, XmlNode)> = Vec::new();
-    if let Some(content) = content {
-        reader.collect_items(content, "", &mut pkg, &mut graph_elements, linked);
-    }
-
-    // Name every graph first so instances can refer to graphs defined later in the file
-    let mut names: Vec<String> = Vec::new();
-    for (path, graph) in graph_elements.iter().take(MAX_GRAPHS) {
-        let identifier = child_value(*graph, "identifier").unwrap_or("").trim();
-        let unique = unique_name(&names, if identifier.is_empty() { "Graph" } else { identifier });
-        reader.graph_names.insert(path.clone(), unique.clone());
-        names.push(unique);
-    }
-    if graph_elements.len() > MAX_GRAPHS {
-        reader.warnings.add(format!("only the first {MAX_GRAPHS} graphs were read"));
-    }
-
-    for ((_, graph), name) in graph_elements.iter().zip(names) {
-        let graph = reader.read_graph(*graph, name);
-        pkg.graphs.push(graph);
-    }
-    if pkg.graphs.is_empty() {
-        reader.warnings.add("the package has no graphs MaterialCraft can open; an empty graph was added");
-        pkg.graphs.push(Graph::new("Graph"));
-    }
-
-    report_placeholders(&pkg, reader.warnings);
-    Ok(SbsRead { pkg, warnings: warnings.finish() })
-}
-pub fn is_sbs(bytes: &[u8]) -> bool {
-    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(SNIFF_BYTES)]);
-    let mut rest = head.trim_start_matches('\u{feff}');
-
-    // Skip the XML declaration and comments before the root element
-    loop {
-        rest = rest.trim_start();
-        let (skip_open, skip_close) = if rest.starts_with("<?") {
-            ("<?", "?>")
-        } else if rest.starts_with("<!--") {
-            ("<!--", "-->")
-        } else {
-            break;
-        };
-
-        match rest[skip_open.len()..].find(skip_close) {
-            Some(end) => rest = &rest[skip_open.len() + end + skip_close.len()..],
-            None => return false,
-        }
-    }
-
-    rest.strip_prefix("<package").is_some_and(|after| after.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()))
-}
-
 pub(super) fn unique_name(taken: &[String], base: &str) -> String {
     let free = |name: &str| !taken.iter().any(|t| t == name);
     if free(base) {
@@ -616,10 +500,7 @@ pub(super) fn read_graph_outputs(element: XmlNode) -> HashMap<String, (String, u
     let mut outputs = HashMap::new();
     for output in child_element(element, "graphOutputs").into_iter().flat_map(|o| children_named(o, "graphoutput")) {
         let identifier = child_value(output, "identifier").unwrap_or("output").to_string();
-        let usage = child_element(output, "usages")
-            .and_then(|u| child_element(u, "usage"))
-            .and_then(|u| child_value(u, "name"))
-            .map_or(usage_index("any"), usage_index);
+        let usage = component_usage::read(output);
         outputs.insert(child_value(output, "uid").unwrap_or("").to_string(), (identifier, usage));
     }
     outputs

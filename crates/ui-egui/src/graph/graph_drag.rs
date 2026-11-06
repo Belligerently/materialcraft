@@ -19,7 +19,7 @@ pub(super) enum GraphDrag {
         wire: WireRef,
         start: Pos2,
     },
-    Pan,
+    Pan(egui::PointerButton),
     Frame {
         id: u64,
         delta: Vec2,

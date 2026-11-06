@@ -16,7 +16,20 @@ const SOURCE: &str = "source.sbs";
 
 /// Whether maps of `usage` hold colors (stored sRGB-encoded) rather than data (linear)
 pub fn srgb_usage(usage: &str) -> bool {
-    matches!(usage, "baseColor" | "emissive" | "specular")
+    matches!(
+        usage,
+        "baseColor"
+            | "diffuse"
+            | "emissive"
+            | "specular"
+            | "specularEdgeColor"
+            | "scatteringColor"
+            | "absorptionColor"
+            | "coatColor"
+            | "sheenColor"
+            | "reflection"
+            | "ambient"
+    )
 }
 
 /// Whether other apps can set a value of this type from the manifest

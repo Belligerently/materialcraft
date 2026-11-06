@@ -468,3 +468,65 @@ fn every_canvas_keeps_properties_after_deselection() {
         }
     }
 }
+
+#[test]
+fn box_selection_and_alt_panning_are_shared_by_every_canvas() {
+    use materialcraft_engine::core::{FunctionGraph, PatternGraph, PatternNodeKind, Value};
+
+    for kind in ["material", "function", "pattern"] {
+        let mut frames = Frames::new(new_session());
+        match kind {
+            "function" => {
+                frames.app.run("file.new", json!({"kind": "function"})).unwrap();
+                let mut graph = FunctionGraph::default();
+                for x in [0.0, 320.0] {
+                    graph.add("get_float1", &[], Some(Value::Text("value".into())));
+                    graph.nodes.last_mut().unwrap().pos = [x, 0.0];
+                }
+                frames.app.run("graph.function.set", json!({"function": graph})).unwrap();
+            }
+            "pattern" => {
+                let owner = NodeId(frames.app.run("graph.node.add", json!({"def": "fx_map"})).unwrap()["id"].as_u64().unwrap());
+                let mut graph = PatternGraph::default();
+                for x in [0.0, 320.0] {
+                    graph.add(PatternNodeKind::Quadrant).unwrap();
+                    graph.nodes.last_mut().unwrap().position = [x, 0.0];
+                }
+                frames.app.run("graph.pattern.set", json!({"id": owner.0, "pattern": graph})).unwrap();
+                frames.app.pattern_editor = Some(crate::pattern::PatternEditor::new(frames.app.session.graph, owner));
+            }
+            _ => {
+                for x in [0, 320] {
+                    frames.app.run("graph.node.add", json!({"def": "uniform", "at": [x, 0]})).unwrap();
+                }
+            }
+        }
+        if kind == "function" {
+            frames.app.run("graph.frame.add", json!({"rect": [-256, 256, 240, 100]})).unwrap();
+        }
+        frames.app.ui.frame_all = true;
+        frames.run(Vec::new(), Modifiers::NONE);
+        frames.run(Vec::new(), Modifiers::NONE);
+        let original = frames.app.session.pkg.clone();
+        let bounds = frames.app.graph.rects.iter().fold(egui::Rect::NOTHING, |bounds, (_, rect)| bounds.union(*rect)).expand(12.0);
+        drag(&mut frames, bounds.min, bounds.max);
+        let selection_count = match kind {
+            "function" => frames.app.function_editor.as_ref().unwrap().selection.len(),
+            "pattern" => frames.app.pattern_editor.as_ref().unwrap().selection.len(),
+            _ => frames.app.session.selection.len(),
+        };
+        assert_eq!(selection_count, 2, "{kind} box selection");
+
+        let before = frames.app.graph.rects[0].1.center();
+        let from = frames.app.graph.view.left_bottom() + vec2(20.0, -20.0);
+        let to = from + vec2(30.0, -20.0);
+        frames.run(vec![Event::PointerMoved(from)], Modifiers::ALT);
+        frames.run(vec![Event::PointerButton { pos: from, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::ALT }], Modifiers::ALT);
+        frames.run(vec![Event::PointerMoved(to)], Modifiers::ALT);
+        frames.run(vec![Event::PointerButton { pos: to, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::ALT }], Modifiers::ALT);
+        frames.run(Vec::new(), Modifiers::NONE);
+        let after = frames.app.graph.rects[0].1.center();
+        assert!((after - before - (to - from)).length() < 0.01, "{kind} pan: {before:?} -> {after:?}");
+        assert_eq!(frames.app.session.pkg, original, "{kind} navigation edited the document");
+    }
+}

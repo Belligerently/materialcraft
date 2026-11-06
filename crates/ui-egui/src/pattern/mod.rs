@@ -9,7 +9,6 @@ mod parameter_value;
 mod pattern_drag;
 mod pattern_editor;
 pub(crate) mod properties;
-mod selection;
 
 pub(crate) use actions::{active, enabled, invoke};
 pub(crate) use canvas::show;

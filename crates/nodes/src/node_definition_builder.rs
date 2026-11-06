@@ -1,5 +1,5 @@
 use crate::{Cook, CookContext, CookResult, NodeDefinition, ParameterDefinition, PortDefinition, PortKind};
-use materialcraft_core::{Curve, FunctionGraph, Gradient, PatternGraph, Value};
+use materialcraft_core::{ComponentUsage, Curve, FunctionGraph, Gradient, PatternGraph, Value};
 
 pub(crate) fn no_cook(_: &CookContext) -> CookResult {
     Err("this node is cooked by the graph evaluator".into())
@@ -118,6 +118,10 @@ impl NodeDefinitionBuilder {
             p.options = options;
         }
         self
+    }
+
+    pub fn component_usage(self, default: u32) -> NodeDefinitionBuilder {
+        self.choice("usage", "Component Usage", ComponentUsage::LABELS, default)
     }
 
     pub fn text(self, id: &'static str, label: &'static str, d: &str) -> NodeDefinitionBuilder {

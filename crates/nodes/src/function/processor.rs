@@ -31,6 +31,7 @@ pub(crate) fn pixel_processor(context: &CookContext) -> CookResult {
     let program = compile(graph, context.seed)?;
     let gray = !context.b("color_mode");
     let kind = if gray { Kind::Gray } else { Kind::Color };
+
     let (width, height) = materialcraft_image::clamp_size(context.w, context.h);
     let channels = kind.channels();
     let mut data = vec![0.0; width as usize * height as usize * channels];
@@ -44,7 +45,7 @@ pub(crate) fn pixel_processor(context: &CookContext) -> CookResult {
                 variables: context.vars,
             };
 
-            let result = pixel(program.evaluate(&evaluation, state)?, gray)?;
+            let result = pixel(program.evaluate_pixel(&evaluation, state)?, gray)?;
             target.copy_from_slice(result.get(..channels).ok_or("invalid output channels")?);
         }
         Ok(())

@@ -20,23 +20,35 @@ impl Program {
     }
 
     fn instruction(&self, index: usize) -> Result<&Instruction, String> {
-        self.instructions.get(index).ok_or("invalid function instruction".into())
+        self.instructions.get(index).ok_or_else(|| "invalid function instruction".into())
     }
 
     fn input(&self, index: usize, slot: usize) -> Result<usize, String> {
-        self.instruction(index)?.inputs.get(slot).copied().ok_or("missing function input".into())
+        self.instruction(index)?.inputs.get(slot).copied().ok_or_else(|| "missing function input".into())
     }
 
     pub fn evaluate(&self, context: &EvaluationContext<'_>, state: &mut EvaluationState) -> Result<Value, String> {
+        state.variables.clone_from(context.variables);
+        self.run(context, state)
+    }
+
+    // Pixel assignments are local; only the general evaluator exports the complete environment
+    pub(super) fn evaluate_pixel(&self, context: &EvaluationContext<'_>, state: &mut EvaluationState) -> Result<Value, String> {
+        state.variables.clear();
+        self.run(context, state)
+    }
+
+    fn run(&self, context: &EvaluationContext<'_>, state: &mut EvaluationState) -> Result<Value, String> {
         use EvaluationStep::*;
+
         state.steps.clear();
         state.values.clear();
         state.registers.clear();
         state.registers.resize(self.instructions.len(), None);
-        state.variables.clone_from(context.variables);
         state.random = context.variables.get("$randomseed").and_then(Value::as_i32).map_or(self.seed, |seed| seed as u32);
         state.steps.push(Enter(self.output));
         let mut remaining_steps = MAX_EVALUATION_STEPS;
+
         while let Some(step) = state.steps.pop() {
             remaining_steps = remaining_steps.checked_sub(1).ok_or("function exceeded its execution budget; check loop termination")?;
             match step {
@@ -71,17 +83,20 @@ impl Program {
                     let arguments = state.values.get(base..).ok_or("invalid function operands")?;
                     let result = operation::evaluate(instruction, arguments, &mut state.variables, &mut state.random, context)
                         .map_err(|error| format!("{} ({}): {error}", instruction.definition.label, instruction.id))?;
+
                     state.values.truncate(base);
                     if instruction.pure
                         && let Some(register) = state.registers.get_mut(index)
                     {
                         *register = Some(result.clone());
                     }
+
                     state.values.push(result);
                 }
                 Branch(index) => {
                     let condition = state.values.pop().ok_or("missing branch condition")?;
                     let slot = if value_type::boolean(&condition)? { 1 } else { 2 };
+
                     state.steps.push(Enter(self.input(index, slot)?));
                 }
                 Sequence(index) => {
@@ -116,6 +131,7 @@ impl Program {
         if value_type::type_code(&result) != expected {
             return Err(format!("function returned {}, expected native type {expected}", result.type_name()));
         }
+
         Ok(result)
     }
 }

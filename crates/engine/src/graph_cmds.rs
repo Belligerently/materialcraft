@@ -51,7 +51,6 @@ pub(crate) fn specs() -> Vec<CommandSpec> {
         cmd!("graph.select", "Select nodes", [], None, "{ids, add?: bool}", has_graph, select),
         cmd!("graph.selectUpstream", "Select upstream nodes", [], None, "{ids?}", has_selection, |s, p| select_stream(s, p, true)),
         cmd!("graph.selectDownstream", "Select downstream nodes", [], None, "{ids?}", has_selection, |s, p| select_stream(s, p, false)),
-        cmd!("graph.align", "Align nodes", [], None, "{mode: left|right|top|bottom|hcenter|vcenter|hdistribute|vdistribute, ids?}", has_selection, align),
         cmd!(
             "graph.createFromSelection",
             "Create graph from selection",
@@ -79,6 +78,7 @@ fn graph_index(s: &Session, p: &J) -> Result<usize> {
 fn open(s: &mut Session, p: &J) -> Result<J> {
     let i = graph_index(s, p)?;
     s.graph = i;
+    s.open_material_preview();
     s.selection.clear();
     s.annotation_selection = None;
     s.view2d.node = None;
@@ -110,7 +110,10 @@ fn delete(s: &mut Session, p: &J) -> Result<J> {
     let i = graph_index(s, p)?;
     s.edit("Delete graph", |s| {
         s.pkg.graphs.remove(i);
+        s.material_preview.remove_graph(i);
+        s.clear_preview_results();
         s.clipboard = None;
+        s.embedded_clipboard = None;
         s.graph = s.graph.min(s.pkg.graphs.len().saturating_sub(1));
         s.selection.clear();
         s.annotation_selection = None;
@@ -126,6 +129,7 @@ fn duplicate(s: &mut Session, p: &J) -> Result<J> {
         g.name = s.pkg.unique_graph_name(&g.name);
         s.pkg.graphs.push(g);
         s.graph = s.pkg.graphs.len() - 1;
+        s.open_material_preview();
         s.selection.clear();
         s.annotation_selection = None;
         Ok(json!({"graph": s.graph}))
@@ -350,41 +354,6 @@ fn select_stream(s: &mut Session, p: &J, up: bool) -> Result<J> {
     Ok(json!({"selected": s.selection.len()}))
 }
 
-fn align(s: &mut Session, p: &J) -> Result<J> {
-    let ids = ids_param(s, "graph.align", p)?;
-    let mode = strp(p, "mode").unwrap_or("left").to_string();
-    s.edit("Align nodes", |s| {
-        let g = s.graph_mut()?;
-        let mut nodes: Vec<&mut materialcraft_core::Node> = g.nodes.iter_mut().filter(|n| ids.contains(&n.id)).collect();
-        if nodes.len() < 2 {
-            return Ok(J::Null);
-        }
-        let xs: Vec<f32> = nodes.iter().map(|n| n.pos[0]).collect();
-        let ys: Vec<f32> = nodes.iter().map(|n| n.pos[1]).collect();
-        let (minx, maxx) = (xs.iter().copied().fold(f32::MAX, f32::min), xs.iter().copied().fold(f32::MIN, f32::max));
-        let (miny, maxy) = (ys.iter().copied().fold(f32::MAX, f32::min), ys.iter().copied().fold(f32::MIN, f32::max));
-        match mode.as_str() {
-            "left" => nodes.iter_mut().for_each(|n| n.pos[0] = minx),
-            "right" => nodes.iter_mut().for_each(|n| n.pos[0] = maxx),
-            "top" => nodes.iter_mut().for_each(|n| n.pos[1] = miny),
-            "bottom" => nodes.iter_mut().for_each(|n| n.pos[1] = maxy),
-            "hcenter" => nodes.iter_mut().for_each(|n| n.pos[0] = (minx + maxx) * 0.5),
-            "vcenter" => nodes.iter_mut().for_each(|n| n.pos[1] = (miny + maxy) * 0.5),
-            "hdistribute" | "vdistribute" => {
-                let k = usize::from(mode == "vdistribute");
-                nodes.sort_by(|a, b| a.pos[k].total_cmp(&b.pos[k]));
-                let (lo, hi) = if k == 0 { (minx, maxx) } else { (miny, maxy) };
-                let step = (hi - lo) / (nodes.len() - 1) as f32;
-                for (i, n) in nodes.iter_mut().enumerate() {
-                    n.pos[k] = lo + step * i as f32;
-                }
-            }
-            other => return Err(bad("graph.align", format!("unknown mode `{other}`"))),
-        }
-        Ok(J::Null)
-    })
-}
-
 fn from_selection(s: &mut Session, p: &J) -> Result<J> {
     let ids = ids_param(s, "graph.createFromSelection", p)?;
     let base = strp(p, "name").unwrap_or("Sub_graph").to_string();
@@ -415,7 +384,7 @@ fn from_selection(s: &mut Session, p: &J) -> Result<J> {
             }
             let ident = format!("output_{}", outputs.len() + 1);
             let id = sub.add_node("output", [rect[0] + rect[2] + 80.0, rect[1] + outputs.len() as f32 * 120.0]);
-            let usage = materialcraft_nodes::atomic::USAGE_IDS.len() as u32 - 1;
+            let usage = materialcraft_core::ComponentUsage::ANY_INDEX;
             sub.node_mut(id)?.params.extend([("identifier".to_string(), Value::Text(ident.clone())), ("usage".to_string(), Value::Enum(usage))]);
             sub.connect(c.from, &c.from_port, id, "input")?;
             outputs.push((c.from, c.from_port.clone(), ident));

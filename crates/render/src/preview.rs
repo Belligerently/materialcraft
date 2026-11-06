@@ -32,16 +32,18 @@ impl Maps {
     pub fn from_usages<'a>(items: impl IntoIterator<Item = (&'a str, &'a Image)>) -> Maps {
         let mut m = Maps::default();
         for (usage, img) in items {
-            let slot = match usage {
-                "baseColor" => &mut m.base_color,
-                "normal" => &mut m.normal,
-                "roughness" => &mut m.roughness,
-                "metallic" => &mut m.metallic,
-                "height" => &mut m.height,
-                "ambientOcclusion" => &mut m.ao,
-                "emissive" => &mut m.emissive,
-                "opacity" => &mut m.opacity,
-                _ => continue,
+            use materialcraft_core::MaterialChannel;
+            let Some(channel) = MaterialChannel::from_id(usage) else { continue };
+
+            let slot = match channel {
+                MaterialChannel::BaseColor => &mut m.base_color,
+                MaterialChannel::Normal => &mut m.normal,
+                MaterialChannel::Roughness => &mut m.roughness,
+                MaterialChannel::Metallic => &mut m.metallic,
+                MaterialChannel::Height => &mut m.height,
+                MaterialChannel::AmbientOcclusion => &mut m.ao,
+                MaterialChannel::Emissive => &mut m.emissive,
+                MaterialChannel::Opacity => &mut m.opacity,
             };
             if slot.is_none() {
                 *slot = Some(img.clone());

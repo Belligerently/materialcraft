@@ -97,11 +97,7 @@ fn is_ui(id: &str) -> bool {
 
 /// Whether an item can run now
 pub fn enabled(app: &MaterialCraftApp, id: &str) -> bool {
-    if let Some(enabled) = crate::pattern::enabled(app, id) {
-        return enabled;
-    }
-
-    if let Some(enabled) = crate::function::enabled(app, id) {
+    if let Some(enabled) = crate::graph::editor_actions::enabled(app, id) {
         return enabled;
     }
 
@@ -126,11 +122,7 @@ pub fn implemented(id: &str) -> bool {
 
 /// Invoke a menu item (menus, shortcuts, the control channel's `ui.menu.invoke`)
 pub fn invoke(app: &mut MaterialCraftApp, ctx: &egui::Context, id: &str) {
-    if crate::pattern::invoke(app, id) {
-        return;
-    }
-
-    if crate::function::invoke(app, id) {
+    if crate::graph::editor_actions::invoke(app, id) {
         return;
     }
 
@@ -288,7 +280,7 @@ pub fn shortcuts(app: &mut MaterialCraftApp, ctx: &egui::Context) {
     }
 
     // Selected wires handle deletion and swapping before nodes
-    if !crate::pattern::active(app) && !app.graph.selected_wires.is_empty() {
+    if crate::graph::editor_target::EditorTarget::resolve(app) == crate::graph::editor_target::EditorTarget::Material && !app.graph.selected_wires.is_empty() {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) | i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
             crate::graph::delete_selected_wires(app);
         } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::X)) {

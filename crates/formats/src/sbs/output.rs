@@ -1,15 +1,5 @@
 use materialcraft_nodes::PortKind;
 
-pub(super) fn usage_index(name: &str) -> u32 {
-    let ids = materialcraft_nodes::atomic::USAGE_IDS;
-    let name = name.trim();
-    let index = ids.iter().position(|u| u.eq_ignore_ascii_case(name)).or_else(|| name.eq_ignore_ascii_case("diffuse").then_some(0));
-    index.unwrap_or(ids.len().saturating_sub(1)) as u32
-}
-
-pub(super) fn usage_name(index: u32) -> &'static str {
-    materialcraft_nodes::atomic::USAGE_IDS.get(index as usize).copied().unwrap_or("any")
-}
 pub(super) fn output_type(graph: &materialcraft_core::Graph, id: materialcraft_core::NodeId, port: &str) -> u32 {
     if let Ok(Some(kind)) = materialcraft_nodes::output_value_type(graph, id) {
         return kind as u32;

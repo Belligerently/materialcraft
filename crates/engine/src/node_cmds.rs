@@ -83,6 +83,7 @@ fn add(s: &mut Session, p: &J) -> Result<J> {
                 pd.default.coerce_json(v).ok_or_else(|| bad("graph.node.add", format!("`{k}` takes a {}", pd.default.type_name())))?
             };
 
+            crate::graph_validation::value(&v).map_err(|error| bad("graph.node.add", error))?;
             params.push((k.clone(), v));
         }
     }
@@ -136,7 +137,7 @@ fn move_nodes(s: &mut Session, p: &J) -> Result<J> {
             if let Some(t) = to {
                 n.pos = snap_position(t, snap);
             } else if let Some(d) = by {
-                n.pos = snap_position([n.pos[0] + d[0], n.pos[1] + d[1]], snap);
+                n.pos = crate::graph_grid::translate(n.pos, d, snap);
             }
         }
         Ok(J::Null)
@@ -198,9 +199,7 @@ fn set_param(s: &mut Session, p: &J) -> Result<J> {
         v
     };
 
-    if let Value::PatternGraph(graph) = &value {
-        graph.validate().map_err(|error| bad("graph.node.param", error))?;
-    }
+    crate::graph_validation::value(&value).map_err(|error| bad("graph.node.param", error))?;
 
     s.edit_merged(&format!("param:{}:{param}", id.0), "Set parameter", |s| {
         s.graph_mut()?.node_mut(id)?.params.insert(param.clone(), value);
@@ -315,9 +314,7 @@ fn set_function(s: &mut Session, p: &J) -> Result<J> {
         },
     };
 
-    if f.nodes.len() > 4096 {
-        return Err(bad("graph.node.function", "the function is too large"));
-    }
+    crate::graph_validation::function(&f).map_err(|error| bad("graph.node.function", error))?;
     s.edit_merged(&format!("fn:{}:{param}", id.0), "Set parameter function", |s| {
         s.graph_mut()?.node_mut(id)?.functions.insert(param.clone(), f);
         Ok(J::Null)

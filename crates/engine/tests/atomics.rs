@@ -171,17 +171,30 @@ fn levels_preserve_independent_rgba_parameters_in_sbs() {
 }
 
 #[test]
-fn selected_pattern_graph_is_resolved_without_changing_the_document() {
+fn selected_node_graph_is_resolved_without_changing_the_document() {
     let mut session = materialcraft_engine::new_session();
     assert!(execute(&mut session, "graph.node.edit", &json!({})).is_err());
-    let node = execute(&mut session, "graph.node.add", &json!({"def": "fx_map"})).unwrap()["id"].as_u64().unwrap();
-    let original = session.pkg.clone();
-    let history = session.history();
-
-    assert_eq!(execute(&mut session, "graph.node.edit", &json!({})).unwrap(), json!({"node": node, "parameter": "pattern"}));
-    assert_eq!(session.pkg, original);
-    assert_eq!(session.history(), history);
-
+    for (definition, kind, parameter) in
+        [("fx_map", "pattern", "pattern"), ("pixel_processor", "function", "function"), ("value_processor", "function", "function")]
+    {
+        let node = execute(&mut session, "graph.node.add", &json!({"def": definition})).unwrap()["id"].as_u64().unwrap();
+        let original = session.pkg.clone();
+        let history = session.history();
+        assert_eq!(execute(&mut session, "graph.node.edit", &json!({})).unwrap(), json!({"kind": kind, "node": node, "parameter": parameter}));
+        assert_eq!(session.pkg, original);
+        assert_eq!(session.history(), history);
+    }
     execute(&mut session, "graph.node.add", &json!({"def": "uniform"})).unwrap();
     assert!(execute(&mut session, "graph.node.edit", &json!({})).is_err());
+
+    let node = session.graph_mut().unwrap().add_node("graph_instance", [0.0; 2]);
+    session.graph_mut().unwrap().node_mut(node).unwrap().params.insert("graph".into(), Value::Text("Child".into()));
+    session.selection = vec![node];
+    assert!(execute(&mut session, "graph.node.edit", &json!({})).is_err());
+    session.pkg.graphs.push(materialcraft_engine::core::Graph::new("Child"));
+    let original = session.pkg.clone();
+    let history = session.history();
+    assert_eq!(execute(&mut session, "graph.node.edit", &json!({})).unwrap(), json!({"kind": "graph", "node": node, "graph": 1}));
+    assert_eq!(session.pkg, original);
+    assert_eq!(session.history(), history);
 }

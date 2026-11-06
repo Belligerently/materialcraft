@@ -31,31 +31,24 @@ pub(super) fn show(app: &mut MaterialCraftApp, ui: &mut Ui, at: Pos2, node: Opti
     action(app, ui, "Add Dot node", "graph.node.add", json!({"def": "dot", "at": [at.x, at.y]}));
     ui.separator();
 
-    action(app, ui, "View outputs in 3D view", "ui.graph.viewOutputs", Value::Null);
-    action(app, ui, "Reset and view outputs in 3D view", "ui.graph.resetViewOutputs", Value::Null);
+    if let Some(node) = node {
+        if let Some(parameters) = crate::material_preview_menu::show(ui, &app.session, app.session.graph, node) {
+            app.run("view.3d.assign", parameters);
+        }
+    } else {
+        action(app, ui, "View outputs in 3D view", "ui.graph.viewOutputs", Value::Null);
+        action(app, ui, "Reset and view outputs in 3D view", "ui.graph.resetViewOutputs", Value::Null);
+    }
     outputs(app, ui, node);
     action(app, ui, "Compute nodes thumbnails", "ui.graph.computeThumbnails", Value::Null);
     action(app, ui, "Clear nodes thumbnails", "ui.graph.clearThumbnails", Value::Null);
     action(app, ui, "Save package", "file.save", Value::Null);
-    action(app, ui, "Paste", "edit.paste", json!({"at": [at.x, at.y]}));
-    action(app, ui, "Paste without link", "edit.pasteWithoutLinks", json!({"at": [at.x, at.y]}));
-    action(app, ui, "Select all", "edit.selectAll", Value::Null);
+    if let Some(command) = super::edit_menu::selection(ui, |command| menus::enabled(app, command)) {
+        let parameters = if matches!(command, "edit.paste" | "edit.pasteWithoutLinks") { json!({"at": [at.x, at.y]}) } else { Value::Null };
+        app.run(command, parameters);
+    }
     action(app, ui, "Previous pin", "ui.graph.previousPin", Value::Null);
     action(app, ui, "Next pin", "ui.graph.nextPin", Value::Null);
-    ui.separator();
-
-    for (label, command) in [
-        ("Copy selection", "edit.copy"),
-        ("Delete selection", "edit.delete"),
-        ("Delete and relink", "edit.deleteRelink"),
-        ("Duplicate selection", "edit.duplicate"),
-        ("Duplicate selection without link", "edit.duplicateWithoutLinks"),
-        ("Select upstream nodes", "graph.selectUpstream"),
-        ("Select downstream nodes", "graph.selectDownstream"),
-        ("Disable selection", "graph.node.disable"),
-    ] {
-        action(app, ui, label, command, Value::Null);
-    }
 }
 
 fn add_nodes(app: &mut MaterialCraftApp, ui: &mut Ui, at: Pos2) {
@@ -101,12 +94,7 @@ fn outputs(app: &mut MaterialCraftApp, ui: &mut Ui, node: Option<NodeId>) {
 }
 
 fn action(app: &mut MaterialCraftApp, ui: &mut Ui, label: &str, command: &str, parameters: Value) {
-    let mut button = egui::Button::new(tr(label));
-    if let Some(shortcut) = menus::shortcut_of(command) {
-        button = button.shortcut_text(shortcut);
-    }
-
-    if ui.add_enabled(menus::enabled(app, command), button).clicked() {
+    if super::edit_menu::button(ui, label, command, menus::enabled(app, command)) {
         if command.starts_with("ui.") || matches!(command, "file.save" | "graph.node.edit") {
             menus::invoke(app, ui.ctx(), command);
         } else {

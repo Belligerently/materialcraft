@@ -484,7 +484,7 @@ pub fn history(app: &mut MaterialCraftApp, ui: &mut Ui) {
 pub fn function_summary(app: &mut MaterialCraftApp, ui: &mut Ui, node: NodeId, param: &str, f: &FunctionGraph) {
     let tk = Tokens::get(ui.ctx());
     if ui.add(crate::widgets::primary_button(ui, &format!("{}  {}", icon::FLOW_ARROW, tr("Edit function graph...")))).clicked() {
-        app.function_editor = Some(crate::function::FunctionEditor::new(node, crate::function::FunctionTarget::Parameter(param.to_string())));
+        crate::graph::subgraph_navigation::open_function(app, node, crate::function::FunctionTarget::Parameter(param.to_string()));
     }
     ui.label(RichText::new(format!("{} {}", f.nodes.len(), tr("function nodes"))).size(10.5).color(tk.text_dim));
     let id = egui::Id::unique(("fn-edit", node.0, param));

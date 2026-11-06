@@ -162,3 +162,51 @@ fn deep_graphs_shared_inputs_and_cycles_do_not_recurse() {
     graph.output = Some(previous);
     assert_eq!(evaluate(&graph, &BTreeMap::new()).unwrap(), Value::Float(1_073_741_824.0));
 }
+
+#[test]
+fn pixel_assignments_are_local_and_match_exported_evaluation() {
+    let mut graph = FunctionGraph::default();
+    let current = graph.add("get_float1", &[], Some(Value::Text("counter".into())));
+    let one = graph.add_constant(Value::Float(1.0));
+    let next = graph.add("add", &[current, one], None);
+    let assign = graph.add("set", &[next], Some(Value::Text("counter".into())));
+    let get = graph.add("get_float1", &[], Some(Value::Text("counter".into())));
+    graph.output = Some(graph.add("sequence", &[assign, get], None));
+    let program = compile(&graph, 7).unwrap();
+    let mut pixel_state = EvaluationState::default();
+    for initial in [3.0, 10.0, -2.0] {
+        let variables = BTreeMap::from([("counter".into(), Value::Float(initial)), ("untouched".into(), Value::Text("keep".into()))]);
+        let context = EvaluationContext { position: [0.5; 2], size: [1.0; 2], images: &[], tile: true, variables: &variables };
+        let mut exported = EvaluationState::default();
+        let expected = program.evaluate(&context, &mut exported).unwrap();
+        for _ in 0..2 {
+            assert_eq!(program.evaluate_pixel(&context, &mut pixel_state).unwrap(), expected);
+        }
+        assert_eq!(expected, Value::Float(initial + 1.0));
+        assert_eq!(variables["counter"], Value::Float(initial));
+        assert_eq!(exported.variables()["counter"], expected);
+        assert_eq!(exported.variables()["untouched"], variables["untouched"]);
+    }
+
+    let read_only = compile(&FunctionGraph::constant(Value::Float(0.5)), 7).unwrap();
+    let context = EvaluationContext { position: [0.5; 2], size: [1.0; 2], images: &[], tile: true, variables: &BTreeMap::new() };
+    assert_eq!(read_only.evaluate_pixel(&context, &mut pixel_state).unwrap(), Value::Float(0.5));
+    assert!(pixel_state.variables().is_empty());
+}
+
+#[test]
+fn pixel_random_seed_and_defined_variables_match_general_evaluation() {
+    let mut graph = FunctionGraph::default();
+    let maximum = graph.add_constant(Value::Float(1.0));
+    let random = graph.add("rand", &[maximum], None);
+    let defined = graph.add("isdefined", &[], Some(Value::Text("known".into())));
+    let zero = graph.add_constant(Value::Float(0.0));
+    graph.output = Some(graph.add("ifelse", &[defined, random, zero], None));
+    let program = compile(&graph, 7).unwrap();
+    let mut state = EvaluationState::default();
+    for variables in [BTreeMap::from([("$randomseed".into(), Value::Int(42)), ("known".into(), Value::Bool(true))]), BTreeMap::new()] {
+        let context = EvaluationContext { position: [0.5; 2], size: [1.0; 2], images: &[], tile: true, variables: &variables };
+        let expected = program.evaluate(&context, &mut EvaluationState::default()).unwrap();
+        assert_eq!(program.evaluate_pixel(&context, &mut state).unwrap(), expected);
+    }
+}

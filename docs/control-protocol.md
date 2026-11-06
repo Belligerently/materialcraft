@@ -68,7 +68,7 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 | Command | Params |
 |---|---|
 | `file.new` | `{template?, name?, size?}`; templates from `graph.templates` (`empty`, `pbr`, `bricks`, `stone_tiles`, `wood`, `rusty_metal`, `fabric`, `ground`) |
-| `graph.node.edit` | `{}` resolves the selected FX-Map to `{node, parameter}`; use `ui.menu.invoke` to enter its subgraph in the graph panel |
+| `graph.node.edit` | `{}` resolves the selected FX-Map, processor or local graph instance to `{kind, node, parameter?, graph?}`; use `ui.menu.invoke` to enter it in the graph panel |
 | `graph.pattern.set` | `{id, pattern}` replaces an FX-Map subgraph with cycle validation and undo |
 | `graph.node.add` | `{def, at?, params?, connectFrom?: {node, port?}, label?}` |
 | `graph.connect` / `graph.disconnect` | `{from, fromPort?, to, toPort?}` / `{to, toPort}` |
@@ -84,11 +84,70 @@ Types: `move`, `down`, `up`, `click`, `doubleClick`, `drag`, `scroll`, `key` (eg
 | `view.3d.loadMesh` | `{path}` shows an OBJ, glTF or GLB mesh (scene `custom`) |
 | `library.list` | `{filter?, category?}`: every node with ports and parameters |
 
+## 3D material assignment
+
+`view.3d.outputs {graph?, reset?}` applies a material graph's image outputs by their usage.
+`graph` accepts an index or name and defaults to the open graph. Ordinary application preserves
+unmatched channel assignments; `reset: true` clears them while preserving the scene, camera and lighting.
+Outputs with unsupported usages or scalar/vector results cannot supply material textures.
+
+`view.3d.assign {graph?, node?, port?, channel, reset?}` assigns an individual image to `baseColor`,
+`normal`, `roughness`, `metallic`, `height`, `ambientOcclusion`, `emissive` or `opacity`.
+The node defaults to the selection only in the open graph. The port accepts an identifier or index;
+terminal Output nodes use `output` or index 0. Assignments refer to their source graph and named port,
+update when that source changes, and remain active while editing a Function Graph.
+`view.3d.clear {}` removes assignments without resetting the scene.
+
+Opening a material graph automatically previews its output usages. Selecting or previewing a node
+in 2D does not reassign the 3D material. Dragging a graph from Explorer onto the 3D view applies its outputs without opening the graph.
+Canvas and Explorer context menus use the same assignment
+commands; the 3D View's Material menu lists its channel sources. A Height-only output affects height
+sampling, not Base Color; assign that image to `baseColor` to inspect its grayscale pattern on the mesh.
+
+`session.inspect.material3d` reports assignments and resolved channels, including source graph/node/port,
+image dimensions and mean values. Assignment commands leave the package and document undo history
+unchanged. Document undo restores the associated source references; replacing a package clears them.
+
 ## Function graphs
 
 `file.new {"kind": "function", "name": "Calculation"}` creates a standalone Function Graph.
 Omit `kind`, or use `"material"`, for a Graph. `graph.function.set {"function": {...}}` replaces
 the active standalone function through one validated, undoable command.
+Both `graph.function.set` and `graph.function.edit` accept an optional `target`: `{"kind":"graph"}`
+(the default), `{"kind":"parameter","node":12,"parameter":"function"}`,
+`{"kind":"dynamic","node":12,"parameter":"opacity"}`, or
+`{"kind":"pattern","owner":12,"node":3,"parameter":"patternrotation"}`.
+
+`graph.function.edit` accepts `edit: {action: add|move|connect|value|output, ...}`.
+For example, `{"edit":{"action":"add","operation":"mul","at":[256,0],"snap":true}}`
+creates and returns a node ID using the same defaults as library and context-menu insertion.
+`graph.pattern.edit` accepts the FX-Map owner `id` and
+`edit: {action: add|move|connect|disconnect|root|value, ...}`.
+Use `command.list` for command descriptions and the serialized `FunctionEdit`/`PatternEdit` types
+in `crates/engine/src/` for the action fields. Value edits are individual undo steps by default;
+`merge: true` groups repeated updates to the same target and value until `edit.finish` or another
+edit ends the group. Idle UI frames preserve explicitly requested automation groups.
+
+`ui.menu.invoke` sends selection actions to the focused editor, including embedded Function
+windows. `ui.inspect.subgraph.target` identifies that Function target; its canvas rectangles and
+ports correspond to the same editor. Raw `command.run` calls retain their explicit command targets.
+
+
+Selection and clipboard commands (`graph.select`, `edit.selectAll`, `edit.copy`, `edit.cut`,
+`edit.paste`, `edit.duplicate`, `edit.delete`, their without-link/relink variants and upstream/downstream
+selection) also work without a UI. They infer the active standalone Function Graph. To address an
+embedded graph, pass `function: <FunctionGraphTarget>` or `pattern: <owner node id>` and explicit
+`ids` for selection-dependent operations. `edit.selectAll` returns those IDs. An optional numeric
+`graph` guards against the owning graph no longer being active. `graph.align` accepts the same
+Function and FX-Map targets with explicit IDs.
+
+Results include `ids` and `selected`; copy/cut also return `copied` and a typed `clip` accepted by
+paste. The session retains the most recent embedded clipboard. Cross-target paste keeps internal
+links and drops external links. Standalone commands update the session selection; embedded commands
+return their selection without changing the parent selection. Invalid operations preserve the
+document, clipboard, selection and undo history. Creation and all function/pattern setters share
+cycle, capacity, ID and position validation.
+
 
 A function has `nodes` and an optional `output` node id. Each node has `id`, native `op`,
 `inputs` (source ids or null for unwired ports), optional `value`, `type_code` and `pos`.
@@ -121,10 +180,13 @@ each has its own reader and writer (`crates/formats/src/material.rs` here), so k
   "source": "source.sbs" }
 ```
 
-- Usages: `baseColor`, `normal`, `roughness`, `metallic`, `height`, `ambientOcclusion`, `emissive`,
-  `opacity`, `specular` (the first output of each). Color usages (`baseColor`, `emissive`,
-  `specular`) are 8-bit sRGB PNGs, the rest 16-bit linear. Normals are tangent space, OpenGL (Y+);
-  height is 0..1 with 0.5 at the surface.
+- Usages come from the shared `ComponentUsage` catalog (the first output of each, excluding
+  `any`). The catalog includes PBR, diffuse/specular, coat, sheen, scattering and user channels.
+  Color maps are 8-bit sRGB PNGs; data maps are 16-bit linear. Each map records its color space.
+  Additional usage identifiers do not change the manifest version; consumers may ignore usages
+  they do not support. Normals are tangent space, OpenGL (Y+); height is 0..1 with 0.5 at the surface.
+  The 3D preview supports base color (including `diffuse`), normal, roughness, metallic, height,
+  ambient occlusion, emissive and opacity; other usages remain available for SBS and exports.
 - Parameters are the exposed inputs other apps can set (float, float2-4, int, int2, bool, color,
   enum), values in the typed form `{"t", "v"}`; colors are linear RGBA.
 - Inputs are the graph's input nodes. Mesh maps feed them by identifier: `ambientOcclusion`,

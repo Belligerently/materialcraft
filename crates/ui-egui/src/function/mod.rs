@@ -6,9 +6,18 @@ mod function_target;
 pub(crate) mod library;
 mod port_label;
 pub(crate) mod properties;
-mod selection;
 
-pub(crate) use canvas::{enabled, invoke, show, show_graph};
+pub(crate) use actions::{enabled, invoke};
 use function_drag::FunctionDrag;
 pub use function_editor::FunctionEditor;
 pub use function_target::FunctionTarget;
+pub(crate) use panel::show_graph;
+
+mod actions;
+mod geometry;
+mod input;
+mod panel;
+
+mod function_canvas;
+mod function_port;
+mod render;

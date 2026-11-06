@@ -2,6 +2,7 @@ use crate::{MaterialCraftApp, docking::Panel};
 
 pub(crate) fn enabled(app: &MaterialCraftApp, command: &str) -> Option<bool> {
     match command {
+        "ui.graph.viewOutputs" | "ui.graph.resetViewOutputs" => Some(app.session.graph().is_ok_and(|graph| graph.function.is_none())),
         "ui.graph.previousPin" | "ui.graph.nextPin" => Some(app.session.graph().is_ok_and(|graph| !graph.pins.is_empty())),
         command if command.starts_with("ui.graph.") => Some(app.session.graph().is_ok()),
         _ => None,
@@ -18,18 +19,27 @@ pub(crate) fn invoke(app: &mut MaterialCraftApp, command: &str) -> bool {
             let Some(result) = app.run(command, serde_json::Value::Null) else { return true };
             let Some(node) = result.get("node").and_then(serde_json::Value::as_u64) else { return true };
 
-            app.function_editor = None;
-            app.pattern_editor = Some(crate::pattern::PatternEditor::new(app.session.graph, materialcraft_engine::core::NodeId(node)));
+            let node = materialcraft_engine::core::NodeId(node);
+            match result.get("kind").and_then(serde_json::Value::as_str) {
+                Some("pattern") => {
+                    app.function_editor = None;
+                    app.pattern_editor = Some(crate::pattern::PatternEditor::new(app.session.graph, node));
+                }
+                Some("function") => {
+                    super::subgraph_navigation::open_function(app, node, crate::function::FunctionTarget::Parameter("function".into()));
+                }
+                Some("graph") => {
+                    if let Some(index) = result.get("graph").and_then(serde_json::Value::as_u64).and_then(|index| usize::try_from(index).ok()) {
+                        super::subgraph_navigation::open_instance(app, index);
+                    }
+                }
+                _ => {}
+            }
             app.ui.dock.focus(Panel::Graph);
         }
         "ui.graph.snapToGrid" => app.ui.prefs.snap_to_grid = !app.ui.prefs.snap_to_grid,
         "ui.graph.viewOutputs" | "ui.graph.resetViewOutputs" => {
-            if command == "ui.graph.resetViewOutputs" {
-                app.run("view.3d.reset", serde_json::Value::Null);
-            }
-
-            app.ui.dock.focus(Panel::View3d);
-            app.session.dirty = true;
+            app.run("view.3d.outputs", serde_json::json!({"reset": command == "ui.graph.resetViewOutputs"}));
         }
         "ui.graph.computeThumbnails" => {
             app.graph.thumbnails_cleared = false;
@@ -68,4 +78,9 @@ fn navigate_pin(app: &mut MaterialCraftApp, forward: bool) {
     let Some(pin) = graph.pins.get(index) else { return };
 
     camera.pan = [pin.pos[0] - app.graph.view.width() * 0.5 / zoom, pin.pos[1] - app.graph.view.height() * 0.5 / zoom];
+    if let Some(editor) = &mut app.function_editor
+        && editor.target == crate::function::FunctionTarget::Graph
+    {
+        editor.set_camera(*camera);
+    }
 }

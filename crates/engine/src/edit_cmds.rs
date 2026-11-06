@@ -126,7 +126,7 @@ fn insert_clip(s: &mut Session, clip: &Clip, at: Option<[f32; 2]>, offset: [f32;
         map.insert(n.id, id);
         let mut c = n.clone();
         c.id = id;
-        c.pos = crate::graph_grid::snap_position([n.pos[0] + shift[0], n.pos[1] + shift[1]], snap);
+        c.pos = crate::graph_grid::translate(n.pos, shift, snap);
         g.nodes.push(c);
     }
     for c in &clip.connections {

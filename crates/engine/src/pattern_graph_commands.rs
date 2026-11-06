@@ -16,10 +16,7 @@ fn set(session: &mut Session, parameters: &Json) -> Result<Json> {
 
     let graph: PatternGraph =
         serde_json::from_value(parameters.get("pattern").cloned().unwrap_or(Json::Null)).map_err(|error| bad("graph.pattern.set", error.to_string()))?;
-    graph.validate().map_err(|error| bad("graph.pattern.set", error))?;
-    if graph.nodes.iter().any(|node| node.position.iter().any(|coordinate| !coordinate.is_finite())) {
-        return Err(bad("graph.pattern.set", "node positions must be finite"));
-    }
+    crate::graph_validation::pattern(&graph).map_err(|error| bad("graph.pattern.set", error))?;
 
     session.edit("Edit FX-Map graph", |session| {
         session.graph_mut()?.node_mut(id)?.params.insert("pattern".into(), Value::PatternGraph(Box::new(graph)));

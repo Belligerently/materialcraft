@@ -1,5 +1,6 @@
 mod base_parameters;
 mod canvas;
+mod component_usage;
 mod connection;
 mod constant;
 mod embedded;
@@ -24,9 +25,12 @@ mod warnings;
 mod xml;
 
 pub use constant::SBS_EXT;
+pub use read::{is_sbs, read_sbs};
 pub use sbs_read::SbsRead;
-pub use sbs_reader::{is_sbs, read_sbs};
-pub use sbs_writer::write_sbs;
+pub use write::write_sbs;
 
 #[cfg(test)]
 mod tests;
+
+mod read;
+mod write;

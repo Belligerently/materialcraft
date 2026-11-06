@@ -1,4 +1,4 @@
-use super::selection;
+use super::PatternEditor;
 use crate::MaterialCraftApp;
 
 pub(crate) fn active(app: &MaterialCraftApp) -> bool {
@@ -8,18 +8,15 @@ pub(crate) fn active(app: &MaterialCraftApp) -> bool {
 }
 
 pub(crate) fn enabled(app: &MaterialCraftApp, command: &str) -> Option<bool> {
-    if command == "ui.graph.parent" {
-        return Some(active(app));
-    }
     if !active(app) {
         return None;
     }
 
-    if let Some(enabled) = selection::enabled(app.pattern_editor.as_ref()?, command) {
+    if let Some(enabled) = editor_enabled(app, app.pattern_editor.as_ref()?, command) {
         return Some(enabled);
     }
     match command {
-        "ui.graph.snapToGrid" | "graph.cook" => None,
+        "ui.graph.snapToGrid" | "graph.cook" | "edit.finish" => None,
         command
             if command.starts_with("graph.")
                 || command.starts_with("ui.graph.")
@@ -32,24 +29,33 @@ pub(crate) fn enabled(app: &MaterialCraftApp, command: &str) -> Option<bool> {
 }
 
 pub(crate) fn invoke(app: &mut MaterialCraftApp, command: &str) -> bool {
-    if command == "ui.graph.parent" {
-        app.pattern_editor = None;
-        app.function_editor = None;
-        return true;
-    }
     let Some(allowed) = enabled(app, command) else { return false };
+
     if !allowed {
         return true;
     }
 
     let Some(mut editor) = app.pattern_editor.take() else { return true };
-    if let Some(mut graph) = editor.current(app) {
-        match selection::run(&mut editor, &mut graph, command, app.ui.prefs.snap_to_grid) {
-            Ok(true) => editor.commit(app, graph),
-            Ok(false) => {}
-            Err(error) => app.toast(error, true),
-        }
-    }
+
+    invoke_editor(app, &mut editor, command);
     app.pattern_editor = Some(editor);
     true
+}
+
+pub(super) fn invoke_editor(app: &mut MaterialCraftApp, editor: &mut PatternEditor, command: &str) {
+    if editor_enabled(app, editor, command) != Some(true) {
+        return;
+    }
+    let parameters = editor.selection_parameters(command);
+    crate::graph::selection_commands::invoke(app, &mut editor.selection, command, parameters);
+}
+
+pub(super) fn editor_enabled(app: &MaterialCraftApp, editor: &PatternEditor, command: &str) -> Option<bool> {
+    materialcraft_engine::selection_commands::enabled_for(
+        &app.session,
+        &materialcraft_engine::SelectionTarget::Pattern(editor.node),
+        &editor.selection,
+        command,
+    )
+    .map(|enabled| enabled && editor.current(app).is_some())
 }

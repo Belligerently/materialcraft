@@ -83,6 +83,7 @@ fn new_graph(session: &mut Session, parameters: &J) -> Result<J> {
         };
         session.pkg.graphs.push(graph);
         session.graph = session.pkg.graphs.len() - 1;
+        session.open_material_preview();
         session.selection.clear();
         session.annotation_selection = None;
         session.view2d.node = None;
@@ -101,9 +102,12 @@ fn new_package(s: &mut Session, p: &J) -> Result<J> {
 pub fn replace_package(s: &mut Session, pkg: Package, path: Option<String>) {
     s.pkg = pkg;
     s.clipboard = None;
+    s.embedded_clipboard = None;
     s.clear_decoded();
     s.path = path;
     s.graph = 0;
+    s.material_preview = crate::MaterialPreview::for_graph(&s.pkg, 0);
+    s.clear_preview_results();
     s.selection.clear();
     s.annotation_selection = None;
     s.view2d.node = None;
@@ -130,6 +134,7 @@ pub fn open_bytes_linked(session: &mut Session, bytes: &[u8], name: Option<Strin
         let (manifest, source) = materialcraft_formats::material::read_material(bytes)?;
         replace_package(session, materialcraft_formats::sbs::read_sbs(&source, "source.sbs", &|_| None)?.pkg, None);
         session.graph = session.pkg.graph_by_name(&manifest.graph).map_or(0, |(index, _)| index);
+        session.open_material_preview();
         return Ok(());
     }
 

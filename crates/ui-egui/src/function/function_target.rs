@@ -1,6 +1,6 @@
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FunctionTarget {
-    Graph(usize),
+    Graph,
     Parameter(String),
     Dynamic(String),
     Pattern { node: u32, parameter: String },
@@ -9,7 +9,7 @@ pub enum FunctionTarget {
 impl FunctionTarget {
     pub fn parameter(&self) -> &str {
         match self {
-            Self::Graph(_) => "",
+            Self::Graph => "",
             Self::Parameter(parameter) | Self::Dynamic(parameter) | Self::Pattern { parameter, .. } => parameter,
         }
     }

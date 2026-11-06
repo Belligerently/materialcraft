@@ -124,6 +124,9 @@ pub struct Session {
     pub annotation_selection: Option<AnnotationSelection>,
     pub view2d: View2d,
     pub view3d: View3d,
+    pub material_preview: crate::MaterialPreview,
+    pub(crate) cooked_graph: Option<usize>,
+    pub(crate) material_cooked: std::collections::BTreeMap<usize, Cooked>,
     /// Cap on node output size while editing (`None` = full size).
     pub preview_size: Option<u32>,
     /// 3D view camera preferences (set with [`Session::set_camera_prefs`]).
@@ -133,6 +136,7 @@ pub struct Session {
     /// What the last opened SBS package held that MaterialCraft couldn't read; empty after a clean open.
     pub load_warnings: Vec<String>,
     pub clipboard: Option<Clip>,
+    pub embedded_clipboard: Option<crate::EmbeddedClipboard>,
     /// The last cook of the open graph.
     pub cooked: Cooked,
     /// Set when the graph changed and needs cooking.
@@ -151,6 +155,9 @@ pub struct Session {
 impl Session {
     pub fn new(pkg: Package) -> Session {
         Session {
+            material_preview: crate::MaterialPreview::for_graph(&pkg, 0),
+            cooked_graph: None,
+            material_cooked: std::collections::BTreeMap::new(),
             pkg,
             path: None,
             graph: 0,
@@ -164,6 +171,7 @@ impl Session {
             log: Vec::new(),
             load_warnings: Vec::new(),
             clipboard: None,
+            embedded_clipboard: None,
             cooked: Cooked::default(),
             dirty: true,
             cache: Arc::new(Mutex::new(Cache::default())),
@@ -190,6 +198,7 @@ impl Session {
             graph: self.graph,
             selection: self.selection.clone(),
             annotation_selection: self.annotation_selection,
+            material_preview: self.material_preview.clone(),
             label: label.into(),
         }
     }
@@ -217,6 +226,11 @@ impl Session {
         r
     }
 
+    /// End the current gesture without adding an undo step
+    pub fn finish_edit(&mut self) {
+        self.merge_key = None;
+    }
+
     fn edit_inner<T>(&mut self, label: &str, f: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
         let snap = self.snapshot(label);
         match f(self) {
@@ -241,6 +255,8 @@ impl Session {
         self.graph = s.graph.min(self.pkg.graphs.len().saturating_sub(1));
         self.selection = s.selection;
         self.annotation_selection = s.annotation_selection;
+        self.material_preview = s.material_preview;
+        self.clear_preview_results();
     }
 
     /// Mark the document modified and in need of a cook.
@@ -319,9 +335,20 @@ impl Session {
         let dec = self.resource_decoder();
         let mut opts = Options::new(&dec);
         opts.max_size = self.preview_size;
-        self.cooked = materialcraft_eval::cook(&self.pkg, self.graph, &opts, &self.cache);
+        let cooked = crate::PreviewCook::run(&self.pkg, self.graph, &self.material_preview.graphs(), &opts, &self.cache);
+        self.accept_preview(cooked);
         self.dirty = false;
         &self.cooked
+    }
+
+    /// Publish a completed editor and material cook together
+    pub fn accept_preview(&mut self, result: crate::PreviewCook) {
+        if result.graph != self.graph || result.cancelled() {
+            return;
+        }
+        self.cooked_graph = Some(result.graph);
+        self.cooked = result.cooked;
+        self.material_cooked = result.materials;
     }
 
     /// Cook graph `gi` at full size, without touching the preview results.
@@ -356,12 +383,6 @@ impl Session {
     pub fn set_camera_prefs(&mut self, prefs: CameraPrefs) {
         self.camera = prefs.sanitized();
         self.view3d.target = self.camera.clamp_target(self.view3d.target);
-    }
-
-    /// The open graph's material channels for the 3D view: usage id → image.
-    pub fn material_maps(&self) -> Vec<(&'static str, &Image)> {
-        let Ok(g) = self.graph() else { return Vec::new() };
-        materialcraft_eval::outputs(g, &self.cooked).into_iter().filter_map(|(_, usage, _, img)| Some((usage, img?))).collect()
     }
 
     /// Show a mesh file in the 3D view (OBJ, glTF, GLB).

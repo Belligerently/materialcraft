@@ -9,11 +9,14 @@ pub mod explorer;
 pub mod fonts;
 pub mod function;
 pub mod graph;
+mod graph_drag_payload;
 pub mod i18n;
 pub mod levels_editor;
 pub mod library;
+mod material_preview_menu;
 mod menu_item;
 pub mod menus;
+#[path = "property/mod.rs"]
 pub mod properties;
 pub mod state;
 pub mod theme;

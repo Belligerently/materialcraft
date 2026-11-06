@@ -1,5 +1,5 @@
 use egui::{Pos2, Vec2};
-use materialcraft_engine::core::{NodeId, PatternGraph, PatternNode, PatternNodeKind, Value};
+use materialcraft_engine::core::{NodeId, PatternGraph, Value};
 use serde_json::json;
 
 use super::PatternDrag;
@@ -10,7 +10,6 @@ pub struct PatternEditor {
     pub graph: usize,
     pub(crate) selection: Vec<u32>,
     pub(crate) inspected_node: Option<u32>,
-    pub(super) clipboard: Vec<PatternNode>,
     pub(super) pan: Vec2,
     pub(super) zoom: f32,
     pub(super) framed: bool,
@@ -20,21 +19,10 @@ pub struct PatternEditor {
 
 impl PatternEditor {
     pub fn new(graph: usize, node: NodeId) -> Self {
-        Self {
-            node,
-            graph,
-            selection: Vec::new(),
-            inspected_node: None,
-            clipboard: Vec::new(),
-            pan: Vec2::ZERO,
-            zoom: 1.0,
-            framed: false,
-            drag: None,
-            menu_at: Pos2::ZERO,
-        }
+        Self { node, graph, selection: Vec::new(), inspected_node: None, pan: Vec2::ZERO, zoom: 1.0, framed: false, drag: None, menu_at: Pos2::ZERO }
     }
 
-    pub(super) fn current(&self, app: &MaterialCraftApp) -> Option<PatternGraph> {
+    pub(crate) fn current<'a>(&self, app: &'a MaterialCraftApp) -> Option<&'a PatternGraph> {
         if app.session.graph != self.graph {
             return None;
         }
@@ -46,22 +34,29 @@ impl PatternEditor {
 
         let default = materialcraft_engine::nodes::find(&node.def)?.param("pattern");
         match node.params.get("pattern").or_else(|| default.map(|parameter| &parameter.default)) {
-            Some(Value::PatternGraph(graph)) => Some((**graph).clone()),
-            None => Some(PatternGraph::default()),
+            Some(Value::PatternGraph(graph)) => Some(graph.as_ref()),
+            None => {
+                static EMPTY: std::sync::OnceLock<PatternGraph> = std::sync::OnceLock::new();
+                Some(EMPTY.get_or_init(PatternGraph::default))
+            }
             _ => None,
         }
     }
 
-    pub(super) fn commit(&self, app: &mut MaterialCraftApp, graph: PatternGraph) {
-        app.run("graph.pattern.set", json!({"id": self.node.0, "pattern": graph}));
+    pub(crate) fn selection_parameters(&self, command: &str) -> serde_json::Value {
+        let selection = if matches!(command, "edit.selectAll" | "edit.selectNone") { &[][..] } else { self.selection.as_slice() };
+        json!({"graph": self.graph, "pattern": self.node.0, "ids": selection, "at": [self.menu_at.x, self.menu_at.y]})
     }
 
-    pub(super) fn add(&mut self, graph: &mut PatternGraph, kind: PatternNodeKind, snap: bool) -> Result<(), String> {
-        let id = graph.add(kind)?;
-        if let Some(node) = graph.nodes.iter_mut().find(|node| node.id == id) {
-            node.position = materialcraft_engine::graph_grid::snap_position([self.menu_at.x, self.menu_at.y], snap);
+    pub(super) fn edit(&mut self, app: &mut MaterialCraftApp, edit: materialcraft_engine::PatternEdit, merge: bool) {
+        if self.current(app).is_none() {
+            return;
         }
-        self.selection = vec![id];
-        Ok(())
+
+        if let Some(result) = app.run("graph.pattern.edit", json!({"id": self.node.0, "edit": edit, "merge": merge}))
+            && let Some(id) = result.get("id").and_then(serde_json::Value::as_u64).and_then(|id| u32::try_from(id).ok())
+        {
+            self.selection = vec![id];
+        }
     }
 }

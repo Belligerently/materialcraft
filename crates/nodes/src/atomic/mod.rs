@@ -37,8 +37,6 @@ use direction::direction;
 
 pub const ATOMIC: &str = "Atomic nodes";
 pub const GRAPH_ITEMS: &str = "Graph items";
-pub const USAGES: &[&str] = &["Base color", "Normal", "Roughness", "Metallic", "Height", "Ambient occlusion", "Emissive", "Opacity", "Specular", "Any"];
-pub const USAGE_IDS: &[&str] = &["baseColor", "normal", "roughness", "metallic", "height", "ambientOcclusion", "emissive", "opacity", "specular", "any"];
 
 pub use levels::levels_fn;
 pub use normal::height_to_normal;

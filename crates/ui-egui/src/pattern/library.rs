@@ -9,13 +9,8 @@ pub(crate) fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         if ui.selectable_label(false, tr(kind.label())).double_clicked()
             && let Some(mut editor) = app.pattern_editor.take()
         {
-            if let Some(mut graph) = editor.current(app) {
-                editor.menu_at = (editor.pan + app.graph.view.size() * 0.5 / editor.zoom).to_pos2();
-                match editor.add(&mut graph, kind, app.ui.prefs.snap_to_grid) {
-                    Ok(()) => editor.commit(app, graph),
-                    Err(error) => app.toast(error, true),
-                }
-            }
+            editor.menu_at = (editor.pan + app.graph.view.size() * 0.5 / editor.zoom).to_pos2();
+            editor.edit(app, materialcraft_engine::PatternEdit::Add { kind, at: editor.menu_at.into(), snap: app.ui.prefs.snap_to_grid }, false);
             app.pattern_editor = Some(editor);
         }
     }

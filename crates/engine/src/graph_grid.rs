@@ -6,3 +6,8 @@ pub fn snap_position(position: [f32; 2], enabled: bool) -> [f32; 2] {
         if enabled { (coordinate / GRID_SPACING).round() * GRID_SPACING } else { coordinate }
     })
 }
+
+/// Apply the same movement and snapping rule during a drag preview and its commit
+pub fn translate(position: [f32; 2], offset: [f32; 2], snap: bool) -> [f32; 2] {
+    snap_position([position[0] + offset[0], position[1] + offset[1]], snap)
+}

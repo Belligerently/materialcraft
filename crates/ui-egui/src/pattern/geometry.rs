@@ -6,12 +6,12 @@ use super::{PatternDrag, PatternEditor};
 pub(super) const NODE_SIZE: f32 = 96.0;
 pub(super) const HEADER_HEIGHT: f32 = 18.0;
 
-pub(super) fn bounds(node: &PatternNode, editor: &PatternEditor, snap: bool) -> Rect {
+pub(super) fn bounds(node: &PatternNode, editor: &PatternEditor, snap: bool, selected: bool) -> Rect {
     let mut position = materialcraft_engine::graph_grid::snap_position(node.position, false);
     if let Some(PatternDrag::Nodes { delta, .. }) = editor.drag
-        && editor.selection.contains(&node.id)
+        && selected
     {
-        position = materialcraft_engine::graph_grid::snap_position([position[0] + delta.x, position[1] + delta.y], snap);
+        position = materialcraft_engine::graph_grid::translate(position, delta.into(), snap);
     }
     let position = pos2(position[0], position[1]);
     if node.kind == PatternNodeKind::Dot {
@@ -39,6 +39,5 @@ pub(super) fn port_label(kind: PatternNodeKind, slot: usize) -> &'static str {
 }
 
 pub(super) fn wire(source: Pos2, destination: Pos2) -> [Pos2; 4] {
-    let offset = vec2(0.0, ((destination.y - source.y).abs() * 0.5).max(24.0));
-    [source, source + offset, destination - offset, destination]
+    crate::graph::wire_geometry::curve_points(source, destination, egui::Vec2::Y)
 }

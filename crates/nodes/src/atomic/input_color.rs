@@ -1,5 +1,6 @@
 use super::GRAPH_ITEMS;
 use crate::{CookContext, CookResult, NodeDefinition, node};
+use materialcraft_core::ComponentUsage;
 use materialcraft_image::{Image, Kind};
 
 pub(super) fn definition() -> NodeDefinition {
@@ -8,6 +9,7 @@ pub(super) fn definition() -> NodeDefinition {
         .atomic()
         .generator()
         .text("identifier", "Identifier", "input")
+        .component_usage(ComponentUsage::ANY_INDEX)
         .color("default", "Default color", [0.5, 0.5, 0.5, 1.0])
         .color_out()
         .cook(input_color_default)

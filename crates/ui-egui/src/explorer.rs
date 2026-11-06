@@ -1,4 +1,4 @@
-//! The package tree, its graphs, named outputs and resources
+//! The package tree, its graphs, inputs, outputs and resources
 
 use egui::{RichText, Ui};
 
@@ -36,17 +36,29 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         ui.label(RichText::new(format!("{}  {name}", icon::PACKAGE)).strong().color(tk.text_strong));
         let mut open: Option<usize> = None;
         let mut action: Option<(&str, usize)> = None;
-        let mut output = None;
+        let mut selected_node = None;
+        let mut assignment = None;
         for (index, graph) in app.session.pkg.graphs.iter().enumerate() {
             let active = index == app.session.graph;
             let function = graph.function.is_some();
             let mut header = |ui: &mut Ui| {
                 let symbol = if function { icon::FUNCTION } else { icon::TREE_STRUCTURE };
                 let response = tree_row::show(ui, &graph.name, symbol, active);
+                if !function {
+                    response.interact(egui::Sense::drag()).dnd_set_drag_payload(crate::graph_drag_payload::GraphDragPayload { name: graph.name.clone() });
+                }
                 if response.clicked() {
                     open = Some(index);
                 }
                 response.context_menu(|ui| {
+                    if !function {
+                        for (label, command) in [("View outputs in 3D view", "view3d"), ("Reset and view outputs in 3D view", "reset3d")] {
+                            if ui.button(tr(label)).clicked() {
+                                action = Some((command, index));
+                                ui.close();
+                            }
+                        }
+                    }
                     for (label, command) in [("Open", "open"), ("Export outputs...", "export"), ("Duplicate", "duplicate"), ("Delete", "delete")] {
                         if ui.button(tr(label)).clicked() {
                             action = Some((command, index));
@@ -66,15 +78,21 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
 
             let id = ui.make_persistent_id(("graph", index, &graph.name));
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true).show_header(ui, header).body(|ui| {
-                ui.indent("outputs", |ui| {
-                    for node in graph.nodes.iter().filter(|node| node.def == "output") {
+                ui.indent("graph-ports", |ui| {
+                    for node in graph.nodes.iter().filter(|node| matches!(node.def.as_str(), "output" | "input_color" | "input_grayscale" | "input_value")) {
                         ui.push_id(node.id, |ui| {
-                            let name = materialcraft_engine::eval::identifier(node);
+                            let name = crate::graph::node_label(node);
                             let selected = active && app.session.selection.contains(&node.id);
-                            let response = tree_row::show(ui, &name, icon::IMAGE, selected);
+                            let symbol = if node.def == "input_value" { icon::FUNCTION } else { icon::IMAGE };
+                            let response = tree_row::show(ui, &name, symbol, selected);
 
+                            response.context_menu(|ui| {
+                                if let Some(parameters) = crate::material_preview_menu::show(ui, &app.session, index, node.id) {
+                                    assignment = Some(parameters);
+                                }
+                            });
                             if response.clicked() || response.double_clicked() {
-                                output = Some((index, node.id, response.double_clicked()));
+                                selected_node = Some((index, node.id, response.double_clicked()));
                             }
                         });
                     }
@@ -84,7 +102,7 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         if let Some(i) = open {
             app.run("graph.open", json!({"graph": i}));
         }
-        if let Some((index, node, preview)) = output {
+        if let Some((index, node, preview)) = selected_node {
             if index != app.session.graph && app.run("graph.open", json!({"graph": index})).is_none() {
                 return;
             }
@@ -101,7 +119,13 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
             }
         }
 
+        if let Some(parameters) = assignment {
+            app.run("view.3d.assign", parameters);
+        }
         match action {
+            Some((command @ ("view3d" | "reset3d"), graph)) => {
+                app.run("view.3d.outputs", json!({"graph": graph, "reset": command == "reset3d"}));
+            }
             Some(("open", i)) => {
                 app.run("graph.open", json!({"graph": i}));
             }

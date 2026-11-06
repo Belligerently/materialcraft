@@ -1,5 +1,5 @@
+use super::GRAPH_ITEMS;
 use super::dot::passthrough;
-use super::{GRAPH_ITEMS, USAGES};
 use crate::{NodeDefinition, PortKind, node};
 use materialcraft_image::{Image, Kind};
 
@@ -9,7 +9,7 @@ pub(super) fn definition() -> NodeDefinition {
         .atomic()
         .any_in("input", "Input")
         .text("identifier", "Identifier", "output")
-        .choice("usage", "Usage", USAGES, 0)
+        .component_usage(0)
         .cook(passthrough)
 }
 

@@ -1,4 +1,4 @@
-//! The 3D view: the open graph's material on a built-in scene, rendered by
+//! The 3D view: assigned material channels on a built-in scene, rendered by
 //! `materialcraft-render` (one ray per pixel at half resolution while the camera moves, 2×2
 //! supersampled when it rests). Left-drag orbits, Alt+drag or middle-drag pans, the wheel zooms,
 //! Shift+drag turns the light and a double-click resets the camera.
@@ -93,6 +93,25 @@ fn menus(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let tk = Tokens::get(ui.ctx());
     egui::Frame::NONE.fill(tk.panel).inner_margin(egui::Margin::symmetric(4, 1)).show(ui, |ui| {
         egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button(tr("Material"), |ui| {
+                let sources = app.session.material_preview.sources(&app.session.pkg);
+                for channel in materialcraft_engine::core::MaterialChannel::ALL {
+                    let source = sources.get(&channel);
+                    let label = source
+                        .and_then(|source| {
+                            let graph = app.session.pkg.graphs.get(source.graph)?;
+                            let node = graph.node(source.node).ok()?;
+                            Some(format!("{} / {}", graph.name, crate::graph::node_label(node)))
+                        })
+                        .unwrap_or_else(|| tr("Unassigned").to_string());
+                    ui.label(format!("{}: {label}", tr(channel.label())));
+                }
+                ui.separator();
+                if ui.button(tr("Clear material assignments")).clicked() {
+                    app.run("view.3d.clear", json!({}));
+                    ui.close();
+                }
+            });
             ui.menu_button(tr("Scene"), |ui| {
                 for (id, label) in SCENES {
                     if ui.selectable_label(app.session.view3d.scene == *id, tr(label)).clicked() {
@@ -172,7 +191,12 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
     let avail = ui.available_size();
     let (rect, resp) = ui.allocate_exact_size(vec2(avail.x, (avail.y - 22.0).max(40.0)), Sense::click_and_drag());
     crate::widgets::name(&resp, egui::Role::Image, "3D view");
-    // Camera gestures.
+    let graph_hover = resp.dnd_hover_payload::<crate::graph_drag_payload::GraphDragPayload>().is_some();
+    if let Some(graph) = crate::widgets::dnd_release::<crate::graph_drag_payload::GraphDragPayload>(&resp) {
+        app.run("view.3d.outputs", json!({"graph": graph.name}));
+    }
+
+    // Camera gestures
     let mut moving = false;
     if resp.dragged() {
         let d = resp.drag_delta();
@@ -217,7 +241,7 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         p.text(
             rect.center_top() + vec2(0.0, 18.0),
             egui::Align2::CENTER_TOP,
-            tr("Add Output nodes with usages (base color, normal, ...) to see the material"),
+            tr("Assign an image with View in 3D view, or connect Output nodes with material usages"),
             egui::FontId::proportional(11.0),
             tk.viewport_text,
         );
@@ -229,7 +253,18 @@ pub fn show(app: &mut MaterialCraftApp, ui: &mut Ui) {
         egui::FontId::proportional(10.5),
         tk.viewport_text,
     );
-    // Bottom bar.
+    if graph_hover {
+        p.rect_stroke(rect.shrink(2.0), 4.0, egui::Stroke::new(2.0, tk.accent), egui::StrokeKind::Inside);
+        p.text(
+            rect.center_top() + vec2(0.0, 38.0),
+            egui::Align2::CENTER_TOP,
+            tr("Drop to apply graph outputs"),
+            egui::FontId::proportional(13.0),
+            tk.viewport_text,
+        );
+    }
+
+    // Bottom bar
     let bar = Rect::from_min_size(pos2(rect.left(), rect.bottom()), vec2(rect.width(), 22.0));
     ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
         ui.painter().rect_filled(bar, 0.0, tk.panel);
@@ -281,11 +316,7 @@ fn content_key(app: &MaterialCraftApp, w: u32, h: u32, show_env: bool) -> u64 {
     for f in [v.yaw, v.pitch, v.distance, v.target[0], v.target[1], v.target[2], v.tiling, v.exposure, v.env_rotation, v.height_scale] {
         f.to_bits().hash(&mut hs);
     }
-    if let Ok(g) = app.session.graph() {
-        for (id, usage, _, _) in materialcraft_engine::eval::outputs(g, &app.session.cooked) {
-            (usage, app.session.cooked.nodes.get(&id).map(|r| r.key)).hash(&mut hs);
-        }
-    }
+    app.session.material_key().hash(&mut hs);
     hs.finish()
 }
 

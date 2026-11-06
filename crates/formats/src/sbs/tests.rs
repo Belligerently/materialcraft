@@ -1,6 +1,6 @@
 use super::embedded::{base64_engine, decode_embedded, encode_embedded};
-use super::sbs_reader::{is_sbs, read_sbs};
-use super::sbs_writer::write_sbs;
+use super::read::{is_sbs, read_sbs};
+use super::write::write_sbs;
 use base64::Engine as _;
 use materialcraft_core::{Frame, Graph, MAX_SIZE_LOG2, MIN_SIZE_LOG2, MISSING_NODE, Package, Resource, ResourceBytes, SizeMode, Value, missing_ports};
 
@@ -81,6 +81,7 @@ fn structural_round_trip() {
 
     assert_eq!(back.nodes[1].params.get("intensity"), Some(&Value::Float(4.5)));
     let Some(Value::Color(color)) = back.nodes[2].params.get("color") else { panic!("uniform color") };
+
     assert!((color[0] - 0.25).abs() < 1e-3 && (color[2] - 0.75).abs() < 1e-3);
     assert_eq!(back.nodes[3].params.get("mode"), Some(&Value::Enum(3)));
     assert_eq!(back.nodes[4].params.get("usage"), Some(&Value::Enum(4)));
@@ -242,6 +243,7 @@ fn native_function_fixture_retains_operation_types_and_ports() {
     assert!(read.warnings.is_empty(), "{:?}", read.warnings);
     let back = read_sbs(&write_sbs(&read.pkg).unwrap(), "values.sbs", &no_linked_files).unwrap();
     let Value::Function(function) = &back.pkg.graphs[0].nodes[0].params["function"] else { panic!("missing function") };
+
     assert_eq!(function.nodes[0].value, Some(Value::Int(16_777_217)));
     assert_eq!(function.nodes[2].op, "add");
     assert_eq!(function.nodes[2].type_code, 16);
@@ -299,5 +301,63 @@ fn navigation_pins_round_trip_in_graphs_and_functions() {
         let reopened = read_sbs(&saved, "pins.sbs", &no_linked_files).unwrap();
         assert!(reopened.warnings.is_empty(), "{:?}", reopened.warnings);
         assert_eq!(reopened.pkg.graphs[0].pins, *pins);
+    }
+}
+
+#[test]
+fn component_usages_round_trip_without_reassigning_existing_indices() {
+    use materialcraft_core::ComponentUsage;
+
+    let original = ["baseColor", "normal", "roughness", "metallic", "height", "ambientOcclusion", "emissive", "opacity", "specular", "any"];
+    for (index, id) in original.iter().enumerate() {
+        assert_eq!(ComponentUsage::from_index(index as u32).id, *id);
+    }
+    assert_eq!(ComponentUsage::from_index(u32::MAX), ComponentUsage::ANY);
+    assert_eq!(ComponentUsage::index("futureUsage"), ComponentUsage::ANY_INDEX);
+    assert_eq!(ComponentUsage::index(" DIFFUSE "), ComponentUsage::index("diffuse"));
+
+    let mut package = Package::new("Usage round trip");
+    let mut graph = Graph::new("Usages");
+    for definition in ["output", "input_color", "input_grayscale", "input_value"] {
+        for (index, usage) in ComponentUsage::ALL.iter().enumerate() {
+            let id = graph.add_node(definition, [index as f32 * 160.0, 0.0]);
+            graph
+                .node_mut(id)
+                .unwrap()
+                .params
+                .extend([("identifier".into(), Value::Text(format!("{definition}_{}", usage.id))), ("usage".into(), Value::Enum(index as u32))]);
+        }
+    }
+    package.graphs.push(graph);
+    let xml = write_sbs(&package).unwrap();
+    let restored = read_sbs(&xml, "usages.sbs", &no_linked_files).unwrap();
+    assert!(restored.warnings.is_empty(), "{:?}", restored.warnings);
+    assert_eq!(restored.pkg.graphs[0].nodes.len(), package.graphs[0].nodes.len());
+    for (original, node) in package.graphs[0].nodes.iter().zip(&restored.pkg.graphs[0].nodes) {
+        assert_eq!(node.def, original.def);
+        assert_eq!(node.params.get("usage"), original.params.get("usage"));
+        assert_eq!(node.params.get("identifier"), original.params.get("identifier"));
+    }
+}
+
+#[test]
+fn input_usage_defaults_and_unknown_metadata_stay_unclassified() {
+    use materialcraft_core::ComponentUsage;
+
+    let mut package = Package::new("Input usages");
+    let mut graph = Graph::new("Inputs");
+    for definition in ["input_color", "input_grayscale", "input_value"] {
+        graph.add_node(definition, [0.0; 2]);
+    }
+    package.graphs.push(graph);
+    let saved = String::from_utf8(write_sbs(&package).unwrap()).unwrap();
+    let usage = "<usages><usage><components v=\"RGBA\"/><name v=\"any\"/></usage></usages>";
+    assert_eq!(saved.matches(usage).count(), 3);
+    for xml in [saved.clone(), saved.replace(usage, ""), saved.replace("<name v=\"any\"/>", "<name v=\"futureUsage\"/>")] {
+        let restored = read_sbs(xml.as_bytes(), "inputs.sbs", &no_linked_files).unwrap();
+        assert_eq!(restored.pkg.graphs[0].nodes.len(), 3);
+        for node in &restored.pkg.graphs[0].nodes {
+            assert_eq!(node.params.get("usage"), Some(&Value::Enum(ComponentUsage::ANY_INDEX)));
+        }
     }
 }

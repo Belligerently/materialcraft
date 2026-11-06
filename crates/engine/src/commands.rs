@@ -51,7 +51,9 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crate::atomic_sample_commands::specs());
         v.extend(crate::material_cmds::specs());
         v.extend(crate::edit_cmds::specs());
+        v.extend(crate::embedded_edit_commands::specs());
         v.extend(crate::graph_cmds::specs());
+        v.extend(crate::alignment_commands::specs());
         v.extend(crate::annotation_commands::specs());
         v.extend(crate::frame_commands::specs());
         v.extend(crate::function_commands::specs());
@@ -62,6 +64,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(crate::connection_commands::specs());
         v.extend(crate::value_input_commands::specs());
         v.extend(crate::view_cmds::specs());
+        v.extend(crate::material_preview_commands::specs());
         v.extend(crate::wire_cmds::specs());
         v
     })
@@ -74,6 +77,9 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 /// Run a command by id with JSON params (empty params = defaults, never a dialog)
 pub fn execute(s: &mut Session, id: &str, params: &J) -> Result<J> {
     let spec = find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
+    if let Some(result) = crate::selection_commands::execute(s, id, params) {
+        return result;
+    }
     (spec.enabled)(s).map_err(|why| EngineError::Disabled { cmd: id.to_string(), why })?;
     let result = (spec.run)(s, params)?;
     if !s.selection.is_empty() || s.annotation_selection.is_some_and(|selection| !s.graph().is_ok_and(|graph| selection.exists(graph))) {
@@ -90,7 +96,9 @@ pub fn list(s: &Session, filter: Option<&str>) -> J {
         command_specs()
             .iter()
             .filter(|c| f.as_ref().is_none_or(|f| c.id.to_ascii_lowercase().contains(f) || c.label.to_ascii_lowercase().contains(f)))
-            .map(|c| json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": c.params, "enabled": (c.enabled)(s).is_ok()}))
+            .map(|c| json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "params": if crate::selection_commands::supports(c.id) {
+                format!("{}; optional function: FunctionGraphTarget or pattern: owner node id, graph: owning graph index; embedded targets use explicit ids; copy returns clip", c.params)
+            } else { c.params.to_string() }, "enabled": crate::selection_commands::enabled(s, c.id, &J::Null).unwrap_or_else(|| (c.enabled)(s).is_ok())}))
             .collect(),
     )
 }

@@ -1,42 +1,35 @@
-use egui::{PointerButton, Rect, Response, Ui};
-use materialcraft_engine::core::PatternGraph;
+use egui::{PointerButton, Response, Ui};
+use materialcraft_engine::PatternEdit;
 
 use super::{PatternDrag, PatternEditor};
 use crate::{MaterialCraftApp, graph::GraphCamera};
 
-pub(super) fn handle(
-    app: &mut MaterialCraftApp,
-    editor: &mut PatternEditor,
-    graph: &mut PatternGraph,
-    ui: &Ui,
-    response: &Response,
-    camera: &GraphCamera,
-) -> bool {
-    let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) else { return false };
+pub(super) fn handle(app: &mut MaterialCraftApp, editor: &mut PatternEditor, ui: &Ui, response: &Response, camera: &GraphCamera) {
+    if crate::graph::gesture::cancelled(ui) {
+        editor.drag = None;
+        return;
+    }
+    let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) else { return };
+
     let position = camera.to_graph(pointer);
-    let port = app
-        .graph
-        .ports
-        .iter()
-        .filter(|port| port.pos.distance(pointer) < (6.0 * editor.zoom).clamp(1.5, 8.0))
-        .min_by(|left, right| left.pos.distance_sq(pointer).total_cmp(&right.pos.distance_sq(pointer)))
-        .map(|port| {
-            (
-                port.node.0 as u32,
-                port.output
-                    .then(|| port.port.strip_prefix("output").and_then(|slot| if slot.is_empty() { Some(0) } else { slot.parse::<usize>().ok() }))
-                    .flatten(),
-            )
-        });
+    let port = crate::graph::port_hit::nearest_by(&app.graph.ports, pointer, |port| (port.pos, (6.0 * editor.zoom).clamp(1.5, 8.0))).map(|port| {
+        (
+            port.node.0 as u32,
+            port.output.then(|| port.port.strip_prefix("output").and_then(|slot| if slot.is_empty() { Some(0) } else { slot.parse::<usize>().ok() })).flatten(),
+        )
+    });
     let node = app.graph.rects.iter().rev().find(|(_, bounds)| bounds.contains(pointer)).map(|(id, _)| id.0 as u32);
     let modifiers = ui.input(|input| input.modifiers);
-    let mut changed = false;
 
-    if response.hovered() && ui.input(|input| input.pointer.button_pressed(PointerButton::Primary)) {
+    if editor.drag.is_none()
+        && GraphCamera::pan_started(ui, response.rect)
+        && !(port.is_some() && modifiers.alt && ui.input(|input| input.pointer.primary_pressed()))
+    {
+        editor.drag = Some(PatternDrag::Pan(crate::graph::gesture::pan_button(ui)));
+    } else if editor.drag.is_none() && response.hovered() && ui.input(|input| input.pointer.button_pressed(PointerButton::Primary)) {
         if let Some((id, slot)) = port {
             if modifiers.alt {
-                disconnect(graph, id, slot);
-                changed = true;
+                editor.edit(app, PatternEdit::Disconnect { node: id, slot }, false);
             } else {
                 editor.drag = Some(PatternDrag::Wire { node: id, slot });
             }
@@ -46,36 +39,27 @@ pub(super) fn handle(
                 editor.drag = Some(PatternDrag::Nodes { start: position, delta: egui::Vec2::ZERO });
             }
         } else {
-            let additive = modifiers.shift || modifiers.ctrl || modifiers.command;
             crate::graph::node_selection::select(&mut editor.selection, None, modifiers);
-            editor.drag = Some(PatternDrag::Box { start: pointer, additive });
+            editor.drag = Some(PatternDrag::Box { start: pointer });
         }
-    }
-    if response.drag_started_by(PointerButton::Middle) {
-        editor.drag = Some(PatternDrag::Pan);
     }
     match &mut editor.drag {
         Some(PatternDrag::Nodes { start, delta }) => *delta = position - *start,
-        Some(PatternDrag::Pan) => editor.pan -= ui.input(|input| input.pointer.delta()) / editor.zoom,
+        Some(PatternDrag::Pan(_)) => editor.pan -= ui.input(|input| input.pointer.delta()) / editor.zoom,
         Some(PatternDrag::Box { start, .. }) => {
-            ui.painter().rect_stroke(
-                Rect::from_two_pos(*start, pointer),
-                0.0,
-                egui::Stroke::new(1.0, crate::theme::Tokens::get(ui.ctx()).accent),
-                egui::StrokeKind::Inside,
-            );
+            crate::graph::node_selection::paint_box(ui.painter(), *start, pointer, crate::theme::Tokens::get(ui.ctx()).accent);
         }
         _ => {}
     }
 
-    if ui.input(|input| input.pointer.button_released(PointerButton::Primary)) {
+    let owner = match editor.drag {
+        Some(PatternDrag::Pan(button)) => button,
+        _ => PointerButton::Primary,
+    };
+    if crate::graph::gesture::finished(ui, owner) {
         match editor.drag.take() {
-            Some(PatternDrag::Nodes { delta, .. }) if delta.length_sq() > 0.01 => {
-                for node in graph.nodes.iter_mut().filter(|node| editor.selection.contains(&node.id)) {
-                    node.position =
-                        materialcraft_engine::graph_grid::snap_position([node.position[0] + delta.x, node.position[1] + delta.y], app.ui.prefs.snap_to_grid);
-                }
-                changed = true;
+            Some(PatternDrag::Nodes { delta, .. }) if delta.length() > 0.5 => {
+                editor.edit(app, PatternEdit::Move { ids: editor.selection.clone(), by: delta.into(), snap: app.ui.prefs.snap_to_grid }, false);
             }
             Some(PatternDrag::Wire { node, slot }) => {
                 if let Some((target, target_slot)) = port {
@@ -84,31 +68,17 @@ pub(super) fn handle(
                         (None, Some(slot)) => Some((target, slot, node)),
                         _ => None,
                     };
-                    if let Some((parent, slot, child)) = connection
-                        && let Some(destination) = graph.nodes.iter_mut().find(|node| node.id == parent).and_then(|node| node.children.get_mut(slot))
-                    {
-                        *destination = Some(child);
-                        changed = true;
+                    if let Some((parent, slot, child)) = connection {
+                        editor.edit(app, PatternEdit::Connect { parent, slot, child }, false);
                     }
                 }
             }
-            Some(PatternDrag::Box { start, additive }) => {
-                if !additive {
-                    editor.selection.clear();
-                }
-                let bounds = Rect::from_two_pos(start, pointer);
-                for (id, rectangle) in &app.graph.rects {
-                    let id = id.0 as u32;
-                    if bounds.intersects(*rectangle) && !editor.selection.contains(&id) {
-                        editor.selection.push(id);
-                    }
-                }
+            Some(PatternDrag::Box { start }) => {
+                let nodes = app.graph.rects.iter().map(|(id, rect)| (id.0 as u32, *rect));
+                crate::graph::node_selection::select_box(&mut editor.selection, nodes, start, pointer, modifiers);
             }
             _ => {}
         }
-    }
-    if ui.input(|input| input.pointer.button_released(PointerButton::Middle)) {
-        editor.drag = None;
     }
     if response.secondary_clicked() {
         editor.menu_at = position;
@@ -118,23 +88,8 @@ pub(super) fn handle(
             crate::graph::node_selection::select(&mut editor.selection, Some(id), egui::Modifiers::NONE);
         }
     }
-    if response.hovered() && ui.input(|input| input.key_pressed(egui::Key::Space)) {
+    if response.hovered() && !ui.ctx().egui_wants_keyboard_input() && ui.input(|input| input.key_pressed(egui::Key::Space)) {
         editor.menu_at = position;
         egui::Popup::open_id(ui.ctx(), response.id.with("menu"));
-    }
-    changed
-}
-
-fn disconnect(graph: &mut PatternGraph, id: u32, slot: Option<usize>) {
-    if let Some(slot) = slot {
-        if let Some(child) = graph.nodes.iter_mut().find(|node| node.id == id).and_then(|node| node.children.get_mut(slot)) {
-            *child = None;
-        }
-    } else {
-        for child in graph.nodes.iter_mut().flat_map(|node| &mut node.children) {
-            if *child == Some(id) {
-                *child = None;
-            }
-        }
     }
 }

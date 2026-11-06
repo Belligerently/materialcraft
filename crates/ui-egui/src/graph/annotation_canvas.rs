@@ -1,16 +1,19 @@
 use egui::{Align2, Color32, FontId, Rect, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;
-use materialcraft_engine::{AnnotationSelection, core::Graph};
+use materialcraft_engine::{
+    AnnotationSelection,
+    core::{Comment, Frame, Pin},
+};
 
 use super::{GraphCamera, GraphDrag, frame_hit::FrameHit};
 use crate::{MaterialCraftApp, theme::Tokens};
 
-pub(crate) fn frames(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &GraphCamera) -> Vec<FrameHit> {
+pub(crate) fn frames(app: &MaterialCraftApp, ui: &Ui, frames: &[Frame], camera: &GraphCamera) -> Vec<FrameHit> {
     let painter = ui.painter_at(app.graph.view);
     let theme = Tokens::get(ui.ctx());
-    let mut hits = Vec::with_capacity(graph.frames.len());
+    let mut hits = Vec::with_capacity(frames.len());
 
-    let mut frames: Vec<_> = graph.frames.iter().collect();
+    let mut frames: Vec<_> = frames.iter().collect();
     frames.sort_by(|first, second| (second.rect[2] * second.rect[3]).total_cmp(&(first.rect[2] * first.rect[3])));
 
     for frame in frames {
@@ -29,6 +32,7 @@ pub(crate) fn frames(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &Gr
         let fill = Color32::from_rgba_unmultiplied(channel(color[0]), channel(color[1]), channel(color[2]), (color[3] * 255.0).round() as u8);
         let selected = app.session.annotation_selection == Some(AnnotationSelection::Frame(frame.id));
         let outline = if selected { Stroke::new(2.0, theme.accent) } else { Stroke::new(1.0, Color32::from_black_alpha(180)) };
+
         painter.rect(rect, 0.0, fill, outline, StrokeKind::Outside);
 
         let title = if frame.title_visible {
@@ -58,12 +62,12 @@ pub(crate) fn frames(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &Gr
     hits
 }
 
-pub(crate) fn comments(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &GraphCamera) -> Vec<(u64, Rect)> {
+pub(crate) fn comments(app: &MaterialCraftApp, ui: &Ui, comments: &[Comment], camera: &GraphCamera) -> Vec<(u64, Rect)> {
     let painter = ui.painter_at(app.graph.view);
     let theme = Tokens::get(ui.ctx());
-    let mut hits = Vec::with_capacity(graph.comments.len());
+    let mut hits = Vec::with_capacity(comments.len());
 
-    for comment in &graph.comments {
+    for comment in comments {
         let mut position = pos2(comment.pos[0], comment.pos[1]) + offset(app, |contents| contents.comments.contains(&comment.id));
         if let Some(GraphDrag::Comment { id, delta }) = &app.graph.drag
             && *id == comment.id
@@ -73,6 +77,7 @@ pub(crate) fn comments(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &
 
         let selected = app.session.annotation_selection == Some(AnnotationSelection::Comment(comment.id));
         let color = if selected { theme.accent } else { theme.text };
+
         let text = painter.layout(comment.text.clone(), FontId::proportional((14.0 * camera.zoom).clamp(6.0, 36.0)), color, comment.size[0] * camera.zoom);
         let rect = Rect::from_min_size(camera.to_screen(position), text.size().max(vec2(24.0, 16.0)));
         painter.galley(rect.min, text, color);
@@ -82,11 +87,11 @@ pub(crate) fn comments(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &
     hits
 }
 
-pub(crate) fn pins(app: &MaterialCraftApp, ui: &Ui, graph: &Graph, camera: &GraphCamera) {
+pub(crate) fn pins(app: &MaterialCraftApp, ui: &Ui, pins: &[Pin], camera: &GraphCamera) {
     let painter = ui.painter_at(app.graph.view);
     let theme = Tokens::get(ui.ctx());
 
-    for pin in &graph.pins {
+    for pin in pins {
         let position = pos2(pin.pos[0], pin.pos[1]) + offset(app, |contents| contents.pins.contains(&pin.id));
         let position = camera.to_screen(position);
         painter.text(position, Align2::CENTER_BOTTOM, icon::MAP_PIN, FontId::proportional(18.0), theme.accent);

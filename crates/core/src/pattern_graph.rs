@@ -22,7 +22,15 @@ impl PatternGraph {
             return Err("pattern graph exceeds the 4096-node limit".into());
         }
 
-        let id = (1..=4097).find(|id| self.nodes.iter().all(|node| node.id != *id)).ok_or("no available pattern node id")?;
+        let mut occupied = [false; 4097];
+        for node in &self.nodes {
+            if let Some(slot) = occupied.get_mut(node.id.saturating_sub(1) as usize)
+                && node.id != 0
+            {
+                *slot = true;
+            }
+        }
+        let id = occupied.iter().position(|occupied| !occupied).ok_or("no available pattern node id")? as u32 + 1;
         self.nodes.push(PatternNode {
             id,
             kind,
@@ -74,5 +82,27 @@ impl PatternGraph {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_reuses_the_lowest_hole_and_ignores_out_of_range_ids() {
+        let mut graph = PatternGraph::with_root(PatternNodeKind::Quadrant);
+        let template = graph.nodes[0].clone();
+        graph.nodes = [0, 2, 4097, u32::MAX].map(|id| PatternNode { id, ..template.clone() }).to_vec();
+        assert_eq!(graph.add(PatternNodeKind::Dot).unwrap(), 1);
+        assert_eq!(graph.add(PatternNodeKind::Dot).unwrap(), 3);
+        graph.nodes.retain(|node| node.id != 2);
+        assert_eq!(graph.add(PatternNodeKind::Dot).unwrap(), 2);
+        assert_eq!(graph.root, Some(1));
+
+        graph.nodes.resize(4096, template);
+        let before = graph.clone();
+        assert!(graph.add(PatternNodeKind::Dot).is_err());
+        assert_eq!(graph, before);
     }
 }

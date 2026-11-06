@@ -2463,6 +2463,7 @@ dependencies = [
 name = "materialcraft-render"
 version = "0.1.2"
 dependencies = [
+ "materialcraft-core",
  "materialcraft-geom",
  "materialcraft-image",
  "rayon",

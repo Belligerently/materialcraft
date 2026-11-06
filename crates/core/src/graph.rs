@@ -138,58 +138,17 @@ impl Graph {
     }
 
     pub fn topo_order(&self) -> Vec<NodeId> {
-        let mut indeg: BTreeMap<NodeId, usize> = self.nodes.iter().map(|n| (n.id, 0)).collect();
-        for c in &self.connections {
-            if let Some(d) = indeg.get_mut(&c.to)
-                && self.nodes.iter().any(|n| n.id == c.from)
-            {
-                *d += 1;
-            }
-        }
-        let mut ready: Vec<NodeId> = indeg.iter().filter(|(_, d)| **d == 0).map(|(id, _)| *id).collect();
-        let mut out = Vec::with_capacity(self.nodes.len());
-        while let Some(n) = ready.pop() {
-            out.push(n);
-            for c in self.connections.iter().filter(|c| c.from == n) {
-                if let Some(d) = indeg.get_mut(&c.to) {
-                    *d = d.saturating_sub(1);
-                    if *d == 0 {
-                        ready.push(c.to);
-                    }
-                }
-            }
-        }
-        out
+        crate::GraphIndex::new(self).topo_order()
     }
 
     /// Every node upstream of `id` (not including it)
     pub fn upstream(&self, id: NodeId) -> Vec<NodeId> {
-        let mut out = Vec::new();
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
-            for c in self.connections.iter().filter(|c| c.to == n) {
-                if !out.contains(&c.from) {
-                    out.push(c.from);
-                    stack.push(c.from);
-                }
-            }
-        }
-        out
+        crate::GraphIndex::new(self).upstream(id)
     }
 
     /// Every node downstream of `id` (not including it)
     pub fn downstream(&self, id: NodeId) -> Vec<NodeId> {
-        let mut out = Vec::new();
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
-            for c in self.connections.iter().filter(|c| c.from == n) {
-                if !out.contains(&c.to) {
-                    out.push(c.to);
-                    stack.push(c.to);
-                }
-            }
-        }
-        out
+        crate::GraphIndex::new(self).downstream(id)
     }
 
     /// The value of exposed input `id` (its default when unset)

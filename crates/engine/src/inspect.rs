@@ -61,6 +61,13 @@ pub fn session(s: &Session, graph: Option<usize>) -> J {
         "selection": s.selection.iter().map(|i| i.0).collect::<Vec<_>>(),
         "view2d": s.view2d,
         "view3d": s.view3d,
+        "material3d": {
+            "assignments": s.material_preview,
+            "channels": s.material_preview.sources(&s.pkg).into_iter().map(|(channel, source)| {
+                let image = s.material_image(&source);
+                json!({"channel": channel, "source": source, "size": image.map(|image| [image.w, image.h]), "mean": image.map(|image| image.mean())})
+            }).collect::<Vec<_>>(),
+        },
         "previewSize": s.preview_size,
         "camera": s.camera,
         "cookMs": s.cooked.ms,

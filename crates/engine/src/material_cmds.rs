@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value as J, json};
 
+use materialcraft_core::ComponentUsage;
 use materialcraft_core::Graph;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use materialcraft_core::Value;
@@ -10,7 +11,6 @@ use materialcraft_formats::material::{FORMAT, ImageInput, Manifest, MapEntry, Pa
 use materialcraft_formats::{Depth, encode};
 #[cfg(test)]
 use materialcraft_image::Image;
-use materialcraft_nodes::atomic::USAGE_IDS;
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::commands::u64p;
@@ -83,7 +83,14 @@ pub fn material_bytes(s: &Session, gi: usize, o: &MaterialOptions) -> Result<Vec
         size = [img.w, img.h];
     }
     if entries.is_empty() {
-        return Err(bad("file.exportMaterial", format!("graph `{}` has no outputs with a material usage ({})", g.name, USAGE_IDS.join(", "))));
+        return Err(bad(
+            "file.exportMaterial",
+            format!(
+                "graph `{}` has no outputs with a material usage ({})",
+                g.name,
+                ComponentUsage::ALL.iter().filter(|usage| **usage != ComponentUsage::ANY).map(|usage| usage.id).collect::<Vec<_>>().join(", ")
+            ),
+        ));
     }
     let manifest = Manifest {
         format: FORMAT.into(),
